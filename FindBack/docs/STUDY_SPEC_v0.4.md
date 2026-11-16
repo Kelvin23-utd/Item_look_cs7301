@@ -15,7 +15,9 @@ Claims and the experiment that supports each:
 | C3. A selective policy needs far fewer captures than always verifying, for a similar rate of wrong leads. Memory alone gives a wrong lead whenever memory is stale. | E3: controlled paired trials. E5: multi-day deployment with natural movement |
 | C4. The system is cheap in latency, storage and energy. | E4 |
 
-E3 uses scripted changes, so it tests the mechanism and the cost, not how often things really move. Only E5 can show that the signals predict staleness in real use. The paper must say this plainly.
+E3 uses scripted changes, so it tests the mechanism and the cost, not how often things really move. It does test the frame signals, because drift comes from how the phone was carried and not from the script. Only a deployment (E5, deferred) can show that age and mobility predict staleness in real use. The paper must say this plainly.
+
+Framing after the literature search (`paper/research/related_work.md`): presenting memory as "last seen" and gating on age and move rate both have precedents. The paper's own ground is acting on staleness under a human-paid capture cost on a phone, and treating the phone's localization drift as a second cause of wrong leads.
 
 ## 2. Definitions used everywhere
 
@@ -129,10 +131,27 @@ A user who finds an item somewhere else tells the app. Items → the item → "U
 | Id | Content |
 | --- | --- |
 | T1 | Dataset: sites, rooms, items, registrations, queries by ground truth, captures, labelled benchmark captures |
-| F1 (E1) | CDF of marker error by position source (`SESSION`, `MAP`) and by whether the item is in the fix point's room. Error against metres walked since the fix. Table of median and 90th percentile. Jumps on re-fix (`map_fix` with `kind` refresh or manual): median and maximum, by fix type. Share of queries where the item's room was named correctly. |
+| F1 (E1) | CDF of marker error by position source (`SESSION`, `MAP`) and by whether the item is in the fix point's room. Error against metres walked since the fix. Table of median and 90th percentile. Jumps on re-fix (`map_fix` with `kind` refresh or manual): median and maximum, by fix type. For queries that start in another room: share that reached NEAR, and time to NEAR. (Room-naming accuracy was dropped: the app does not log a ground truth for it.) |
 | F2 (E2) | ROC of benchmark captures, positives `target`, negatives split by `empty`, `other`, `lookalike`. AUC with bootstrap intervals. True-positive rate per condition at the threshold chosen on the dev split. Two decision rules: similarity threshold; threshold plus margin over the best-matching other record (from the embedding files and `records_log.jsonl`). |
-| F3 (E3, E5) | Policy replay on paired queries: captures per query against wrong-lead rate, and against lost-retrieval rate. Policies: memory only; always verify; the logged on-device heuristic; random capture with probability p (the diagonal baseline); oracle (captures exactly the stale queries); a risk score from logistic regression on the pre-capture signals, trained on dev sessions or leave-one-session-out, swept over its threshold. Signal ablation for the learned policy. Bootstrap intervals clustered by session. |
+| F3 (E3, E5) | Policy replay on paired queries: captures per query against wrong-lead rate, and against lost-retrieval rate. Policies: memory only; always verify; the logged on-device heuristic; random capture with probability p (the diagonal baseline); oracle (captures exactly the stale queries); an age-only threshold (prior work reports recency alone is a strong baseline); a risk score from logistic regression on the pre-capture signals, trained on dev sessions or leave-one-session-out, swept over its threshold. Signal ablation for the learned policy: age only, world signals only, frame signals only, all. Bootstrap intervals clustered by session. |
 | T2 (E4) | Latency of registration and verification (median, 95th percentile, by stage), storage per item, map file size, seconds per capture, power per mode and energy per verification |
+
+### How the selective policy is evaluated (decided 2026-11-16, before any study data)
+
+In E3 a script decides what moves, at random. No pre-capture signal can predict that, and every record is older than the on-device rule's 30-minute limit, so the logged rule will verify every query. Reporting it as "selective" would show a saving of zero that says nothing. The paper therefore reports three things, and the on-device rule only as a labelled row.
+
+1. **Measured, frame staleness.** Among queries whose item was not moved (ground truth `present`), the marker is wrong when its error exceeds 0.30 m. Report how well the frame signals predict that (AUC with interval, from E1 and E3 together) and, on the paired E3 queries, the captures-against-wrong-leads curve of a policy that uses the frame signals only.
+2. **Measured, verification behaviour.** From the paired E3 queries: the share of captures that confirm when the item is at the marker, and the share that confirm when it is not, overall and per ground-truth class, with intervals.
+3. **What-if curve for world staleness.** Using the two measured shares from item 2 (call them `c_p` and `c_s`), a base rate `b` of stale queries, and a staleness predictor with ROC points (`FPR`, `TPR`):
+   - wrong-lead rate = `b × (1 − TPR × (1 − c_s))`
+   - lost-retrieval rate = `(1 − b) × FPR × (1 − c_p)`
+   - captures per query = `b × TPR + (1 − b) × FPR`
+
+   The predictor's ROC is the equal-variance binormal curve for a given AUC. Plot the captures per query needed to bring the wrong-lead rate within 5 percentage points of always verifying, against predictor AUC from 0.5 to 1, for `b` = 0.1, 0.3 and 0.5. Mark on the AUC axis every AUC actually measured (age only and all signals in E3; frame signals for frame staleness; any E5 data). The curve states what would have to be true of a home for selective verification to pay off; it is a model, and the paper must call it one.
+
+Also on the measured policy figure: an age-only threshold policy.
+
+If a small natural-use run is collected (tag `exp=E5`: daily-use items, one query round each evening, "Update location" when found elsewhere), its age and mobility AUCs are measurements of world-staleness predictability and go on the same axis.
 
 ### Other tools
 
@@ -148,4 +167,4 @@ A user who finds an item somewhere else tells the app. Items → the item → "U
 | E2 | Verification benchmark in BENCHMARK mode | 20 items × about 12 labelled captures = 240 |
 | E3 | Controlled paired trials in PAIRED mode, from trial sheets | 2 sites × 20 items × 4 rounds = 160 queries |
 | E4 | Cost: latency from logs; 3 power runs of 5 minutes per mode | tracking only; tracking plus a verification every 20 s |
-| E5 | Deployment: live normally, query every item twice a day, update location when found elsewhere | 2 sites × 20 items × 2 rounds × 5 days = 400 queries |
+| E5 | Deployment: live normally, query every item twice a day, update location when found elsewhere | Deferred (2026-11-16): it does not fit before the Nov 25 presentation, and twice-daily queries on every item are not how a phone is used. Future work. |

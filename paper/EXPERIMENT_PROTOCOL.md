@@ -35,7 +35,7 @@ Check: the card names the right room, the arrow follows your walked path, and ea
 
 1. Status panel → "New map…". This archives the pilot items; nothing is deleted.
 2. Set home with a spot. Name each room as you enter it and walk through all rooms once.
-3. Save 20 items, 6–8 per room. Choose things you can pick up and put back in exactly the same place. Include two or three pairs that look alike (two mugs, two remotes, two chargers).
+3. Save 20 items, 6–8 per room. Choose things you can pick up and put back in exactly the same place. Include at least five pairs that look alike (two mugs, two remotes, two chargers, two books, two bottles).
 4. In the save dialog, answer "How often does it move?" honestly and check the room.
 
 ## E1. Position accuracy across rooms and restarts
@@ -64,13 +64,13 @@ For each item: Items → Find → walk to the ring. Each time you press Verify a
 | 5 | Lights off or curtains closed | The item | dim |
 | 6, 7 | Take the item away; capture from the front and from the side | Nothing | default, angled |
 | 8, 9 | Put a clearly different object on the spot | A different object | default, angled |
-| 10 | Put its look-alike on the spot, if it has one | A look-alike | default |
+| 10, 11 | Put its look-alike on the spot, if it has one; capture from the front and from the side | A look-alike | default, angled |
 
 Then put the item back, press Done and choose "Skip (not usable)".
 
 ## E3. Controlled paired trials
 
-Tag `home=A;exp=E3;round=1;split=dev` for round 1; `round=2`, `3`, `4` with `split=test` for the others. Mode PAIRED.
+Tags `home=A;exp=E3;round=1;split=dev` and `home=A;exp=E3;round=2;split=dev` for rounds 1 and 2; `round=3` and `round=4` with `split=test` for the others. Mode PAIRED.
 
 For each round:
 
@@ -90,6 +90,14 @@ Answer the ground truth from what you see, not from what the app said.
 
 Claude runs this over USB: three 5-minute recordings of the phone's power rails with tracking only, and three with a verification every 20 seconds. You only need to prop the phone so it sees one saved item, with the app located.
 
+## Optional: five minutes each evening (E5)
+
+This is the only part where things move for real reasons, so even a small amount is valuable.
+
+1. On the study map, also save 6–8 things you use every day (charger, keys, remote, mug, glasses, wallet) where they usually live. Answer "How often does it move?" honestly.
+2. Each evening: tag `home=A;exp=E5;split=test`, mode PAIRED. Locate, then query each of these items: Find → Verify once at the ring → Done → the true answer.
+3. If an item was somewhere else, find it, then Items → the item → "Update location" and tap it where it is now.
+
 ## What changed from the first plan
 
-The 5-day "live with it" run (E5) is not in this schedule. It does not fit before Nov 25, and asking for a query on every item twice a day is not how a phone is used. The paper will say that scripted trials show what each policy does when memory is stale, not how often memory is stale in daily life.
+The full 5-day "live with it" run is not in this schedule: it does not fit before Nov 25, and a query on every item twice a day is not how a phone is used. The short evening run above replaces it. The paper will say that scripted trials show what each policy does when memory is stale, not how often memory is stale in daily life.

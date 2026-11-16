@@ -1,9 +1,13 @@
 % FindBack workshop paper draft.
-% Build: latexmk -pdf findback.tex
+% Build: latexmk -pdf -outdir=build findback.tex
 %
 % RULE FOR THIS FILE: no measured number is typed by hand. Every result is a macro
 % from generated/results.tex, written by analysis/paper_figures.py from the phone logs.
 % A macro with no data yet prints a red TBD.
+%
+% Target (see research/venues.md): a 6-page ACM workshop paper, references extra,
+% single-blind. Best fit found: ImmerCom at MobiCom 2027 (2027 call not announced;
+% the 2026 deadline was in June).
 \documentclass[sigconf,10pt]{acmart}
 \settopmatter{printacmref=false}
 \renewcommand\footnotetextcopyrightpermission[1]{}
@@ -29,19 +33,20 @@
 \affiliation{\institution{\todo{affiliation}}\country{USA}}
 
 \begin{abstract}
-Phones and glasses can now remember where a user put things and lead the user back.
-What they store, however, is an observation from the past.
-Presenting it as the item's current location is wrong whenever the item has moved or the device's
-position in its own map has drifted, and the user walks to an empty spot.
-Checking with a fresh camera capture on every query avoids this, but it costs the user a capture
+Phones and glasses can remember where a user put things and lead the user back.
+What they store is an observation from the past, and recent systems say so: they answer
+``last seen here''.
+None of them acts on it.
+A remembered location can be wrong for two reasons: the item has moved, or the device's own
+position in its map has drifted, so the marker is drawn in the wrong place.
+Checking with a fresh camera capture on every query avoids both, but it costs the user a capture
 each time, and visual matching makes its own mistakes.
-We present \sys{}, a smartphone system that treats object memory as a historical claim.
-It answers each query with one of three statements (\emph{last seen here}, \emph{seen here now},
-or \emph{not confirmed}) and decides, from signals available before any new capture, whether a
-fresh look is worth its cost.
-\sys{} runs entirely on the device and needs no markers: it keeps its own lightweight map,
-re-attached in each session from a single fix point, with a graph of walked paths for
-room-level guidance.
+We present \sys{}, a smartphone system that decides per query, from signals available before any
+new capture, whether a fresh look is worth its cost, and answers \emph{last seen here},
+\emph{seen here now}, or \emph{not confirmed}.
+Its signals cover both causes: how old the memory is and how often the item moves, and how far the
+phone has walked and whether tracking was interrupted since its map was last fixed to the world.
+\sys{} runs entirely on the device and needs no markers.
 In \NSites{} homes with \NItems{} items and \NQueriesPaired{} paired queries, memory alone gave a
 wrong lead in \WrongLeadMemoryPct{}\% of queries.
 Selective verification reduced this to \WrongLeadSelectivePct{}\% with \CapturesSelective{}
@@ -53,51 +58,52 @@ captures per query, \CaptureSavingPct{}\% fewer than always verifying.
 % ---------------------------------------------------------------------------
 \section{Introduction}
 
-``Where did I put my keys?'' is one of the oldest requests made of a memory aid.
-Mobile devices can now answer it without tags on the objects: a phone or a pair of glasses sees
-an item, stores its appearance and its position in a spatial map, and later points the user back
-to it \todo{cite: object finders, episodic memory}.
-Persistent augmented-reality frameworks make the spatial half of this practical on commodity
-phones.
+``Where did I put it?'' is one of the oldest requests made of a memory aid.
+Mobile devices can now answer it without tags on the objects.
+A wearable camera or a phone sees an item, stores its appearance and where it was, and later
+leads the user back to it~\cite{yagi2021gofinder,morrison2023findmythings,maniar2025mempal}.
 
-The stored position, however, is a fact about the past.
-Between the moment an item was remembered and the moment the user asks for it, two things can go
-wrong.
-The \emph{world} can change: somebody moves the item.
-The \emph{frame} can change: the device's estimate of where it is in its own map drifts as the
-user walks, or is re-established imperfectly after a restart.
-In both cases a system that draws a confident marker at the stored position sends the user to the
-wrong place.
+The stored position is a fact about the past, and the better systems already present it that way:
+MemPal answers that an object ``was last seen'' at a time and place~\cite{maniar2025mempal}, and
+others attach a confidence label that falls with age~\cite{xie2026linguistic}.
+Labelling is where they stop.
+The user is told the answer may be stale and is left to find out.
+
+This matters because people follow location cues.
+In controlled studies, participants shown an augmented-reality cue that was sometimes wrong
+followed it without checking the scene, and location cues produced the most such
+errors~\cite{warden2023fast,raikwar2024beyond}.
+A marker drawn confidently at a stale position sends the user to the wrong place.
 We call this a \emph{wrong lead}.
-It costs more than the walk.
-A user who has been misled a few times stops trusting the marker when it is right
-\todo{cite: automation bias}.
+
+A wrong lead has two causes, and prior work on object memory models only one.
+The \emph{world} can change: somebody moves the item.
+Robotics has long estimated the chance that a map entry still holds from its age and from how
+often such objects move~\cite{rosen2016towards,toris2017temporal,bogenberger2026glasses}.
+The \emph{frame} can also change: the device's estimate of where it is in its own map drifts as
+the user walks, or is re-established imperfectly after a restart.
+Measurements of phone AR report position errors above 10\,cm in all but the simplest
+settings~\cite{scargill2022here} and errors of metres over long walks~\cite{feigl2020localization}.
+The object-memory and robot-map work we surveyed takes the observer's pose as given.
+On a phone carried through a home it is not.
 
 The obvious remedy is to look again: ask the user to aim the camera at the remembered spot and
 match the fresh view against the stored appearance.
 Doing this on every query has three costs.
-The user must walk to the spot, aim, and wait, even when the item has plainly not moved.
+The user must walk to the spot, aim, and wait, even when nothing has changed.
 Each capture costs computation and energy.
 And matching is imperfect: it can confirm a look-alike, or fail to confirm an item that is there.
-A system that always verifies trades wrong leads for extra effort and a new kind of error.
 
-This paper argues for a middle path.
-A stored location should be presented as what it is, a historical claim, and the system should
-choose \emph{per query} whether a fresh look is worth its cost.
-The choice has to be made from signals that are available \emph{before} any new capture,
-otherwise it costs as much as verifying.
-Such signals exist.
-How old is the memory?
-Does this item tend to move?
-How far has the phone walked, and has tracking been interrupted, since its map was last fixed to
-the world?
-
+This paper takes the step from labelling staleness to acting on it under a cost.
+\sys{} chooses \emph{per query} whether a fresh look is worth it, using only signals available
+\emph{before} any new capture, since a decision that needs a capture costs as much as verifying.
 We make three contributions.
 
 \begin{itemize}
-\item \textbf{A formulation.} We define the object-memory query as a three-way answer
-  (\emph{last seen here}, \emph{seen here now}, \emph{not confirmed}) and evaluate a policy by the
-  wrong leads it produces against the captures it requests (\S\ref{sec:problem}).
+\item \textbf{Frame staleness as a first-class signal.} Alongside the age and mobility signals
+  known from robot mapping, \sys{} tracks cheap proxies for its own localization error (distance
+  walked, tracking interruptions and time since the last map fix) and uses them to decide when a
+  remembered position needs checking (\S\ref{sec:problem}, \S\ref{sec:design}).
 \item \textbf{A system.} \sys{} is an on-device Android system built on ARCore.
   It keeps a marker-free persistent map of a home, guides the user along paths they have walked,
   verifies with a fresh capture, and logs everything needed to replay each query under any
@@ -135,16 +141,10 @@ An answer of \emph{last seen here} or \emph{seen here now} is a \emph{correct le
 at the marked position, within \RPresentCm{}\,cm, and a \emph{wrong lead} otherwise.
 An answer of \emph{not confirmed} is a \emph{correct warning} if the item is not there, and a
 \emph{lost retrieval} if it is.
-Wrong leads are the error this paper targets.
-Lost retrievals are the price of verification errors.
-
-\paragraph{Why memory goes stale.}
-A wrong lead has two independent causes.
-With \emph{world staleness}, the item is no longer where it was.
-With \emph{frame staleness}, the item has not moved but the marker is drawn in the wrong place,
-because the device's map is misaligned with the world.
-The two call for different signals, and a policy that watches only one of them is blind to the
-other.
+Wrong leads are the error this paper targets; lost retrievals are the price of verification
+errors.
+The wrong-lead rate penalizes information that is both old and wrong, as the Age of Incorrect
+Information does for status updates~\cite{maatouk2020age}, and ignores age that did no harm.
 
 \paragraph{Policies.}
 A policy maps the \emph{pre-capture signals} of a query to a decision: capture or not.
@@ -152,9 +152,11 @@ A policy maps the \emph{pre-capture signals} of a query to a decision: capture o
 \emph{Always-verify} always does.
 A \emph{selective} policy captures when an estimate of the risk that the record is stale exceeds a
 threshold.
-Sweeping that threshold traces a curve from memory-only to always-verify.
-The question is how far below the straight line between them the curve lies, that is, how much
-better than capturing at random the signals let us do.
+Sweeping the threshold gives a risk--coverage curve in the sense of selective
+prediction~\cite{geifman2017selective}: coverage is the share of queries answered from memory, and
+risk is the wrong-lead rate.
+The question is how far the curve lies below the straight line between memory-only and
+always-verify, that is, how much better than capturing at random the signals let us do.
 
 % ---------------------------------------------------------------------------
 \section{Design}
@@ -192,8 +194,11 @@ guidance that respects walls, verification, and the capture policy.
 
 \subsection{A home map from one fix point}
 
-ARCore tracks the phone's motion within a session but offers no way to save its map to local
-storage; its persistent anchors are hosted by a cloud service.
+ARCore tracks the phone's motion within a session.
+On phones, its documentation offers persistence only through Cloud Anchors, which are hosted on a
+cloud endpoint, need an Internet connection, and have a limited
+lifetime~\cite{google2026cloudanchors,google2026cloudanchorsguide}; local anchor persistence
+exists only for XR headsets and glasses~\cite{google2026jetpackxranchors}.
 An earlier version of \sys{} stored positions relative to a printed reference picture in each
 room.
 That needs one picture per room, and it failed in practice for a simple reason: users cannot be
@@ -289,6 +294,8 @@ The policy may use only what is known before a capture.
 \begin{itemize}
 \item \emph{World staleness:} the age of the record; the user's estimate of how often the item
   moves; how many times the item has been moved before.
+  These follow persistence models from robot
+  mapping~\cite{rosen2016towards,toris2017temporal,bogenberger2026glasses,ghosh2026memory}.
 \item \emph{Frame staleness:} whether the position comes from an anchor created in this session or
   from the home map; the drift proxies; the kind of fix point.
 \end{itemize}
@@ -323,6 +330,14 @@ capture with the similarity of every candidate and their embeddings, and the gro
 by the experimenter.
 Any policy and any matching threshold can then be replayed offline on identical data.
 Thresholds are chosen on development sessions and frozen before test sessions.
+
+\paragraph{Use of generative AI.}
+\todo{Authors: confirm every sentence here is true before submission; ACM requires AI used in
+conducting the research to be described in the methods.}
+An AI coding assistant (Claude, Anthropic) wrote most of the application and analysis code from
+the authors' design and under their review, searched the literature, and drafted text.
+The authors ran every experiment, entered all ground truth, and checked the code, the analysis and
+each reference.
 
 % ---------------------------------------------------------------------------
 \section{Evaluation}
@@ -377,13 +392,10 @@ place.
 The experimenter applied the changes and then queried every item once, capturing exactly once per
 query.
 Because the changes are scripted, E3 measures what each policy does when memory is stale and what
-it costs; it says nothing about how often memory is stale in daily life.
-
-\paragraph{Deployment (E5).}
-To measure that, \todo{two} of the authors used \sys{} at home for \todo{five} days.
-They lived normally, queried every item twice a day, and told \sys{} when they found an item
-somewhere else.
-Here items move for their own reasons, and the signals can only help if they really predict it.
+it costs.
+It cannot show that age or mobility predict staleness in daily life, since we chose what moved.
+It does test the frame signals, because drift arises from how the phone was carried and not from
+the script.
 
 \subsection{Localization across rooms and restarts}
 
@@ -392,7 +404,6 @@ With the position taken from a same-session anchor, the median marker error was
 \MarkerErrSessionMedianCm{}\,cm.
 After a restart, with the map re-attached from one fix point, it was \MarkerErrMapMedianCm{}\,cm
 (90th percentile \MarkerErrMapPninetyCm{}\,cm).
-\sys{} named the item's room correctly in \RoomCorrectPct{}\% of queries.
 Locking twice onto the same spot moved the map by a median of \RelockJumpMedianCm{}\,cm and
 \RelockJumpMedianDeg{}$^\circ$.
 
@@ -408,15 +419,15 @@ alone and \LookalikeFPRMarginPct{}\% with the margin rule.
 
 \subsection{Wrong leads against captures}
 
-\todo{Figure F3: captures per query against wrong-lead rate for all policies; E3 and E5 panels.}
+\todo{Figure F3: captures per query against wrong-lead rate for all policies.}
 Across \NQueriesPaired{} paired queries, memory alone gave a wrong lead in
 \WrongLeadMemoryPct{}\% of them.
 Always verifying reduced this to \WrongLeadAlwaysPct{}\%, at one capture per query, and lost
 \LostRetrievalAlwaysPct{}\% of retrievals to failed matches.
 The selective policy gave \WrongLeadSelectivePct{}\% wrong leads with \CapturesSelective{}
 captures per query.
-\todo{Compare with the random-capture line and the oracle; report the signal ablation; report E3
-and E5 separately.}
+\todo{Compare with: capturing at random; an oracle; an age-only threshold, since recency alone is
+reported to be a strong baseline~\cite{ghosh2026memory}; frame signals only; all signals.}
 
 \subsection{Cost}
 
@@ -431,9 +442,19 @@ A verification consumed \EnergyPerVerifymJ{}\,mJ above tracking alone.
 
 \paragraph{The signals must earn their place.}
 A selective policy helps only if its signals predict staleness.
-In scripted trials we choose what moves, so those trials cannot show this; only the deployment
-can.
-\todo{State the outcome honestly once E5 is analysed, including if the signals do not help.}
+Our trials script what moves, so they show this for the frame signals only.
+Whether age and mobility predict staleness in real homes needs a deployment in which items move
+for their own reasons, which we leave to future work.
+\todo{State the outcome honestly once E3 is analysed, including if the signals do not help.}
+
+\paragraph{A phone is an intermittent sensor.}
+A phone sees an item only when the user points it there.
+For items that move many times a day, its memory is stale most of the time and a tag is the
+better tool; asking for a capture on every use is not realistic.
+\sys{} fits items that are put away and wanted again much later.
+For those, the natural next step is to remove per-item effort altogether: build the inventory
+from one walk-through, and update each entry from whatever the camera happens to see afterwards,
+counting an item as missing only when its place was actually visible.
 
 \paragraph{One floor, one device.}
 The map treats the home as a single floor, and all data come from one phone model.
@@ -446,27 +467,57 @@ A stronger model would raise the ceiling for always-verify and narrow the case f
 captures; a weaker one does the opposite.
 The framework is the same.
 
-\paragraph{The user is the sensor.}
-\sys{} learns about an item only when the user registers it, verifies it, or reports a move.
-Glasses that observe continuously would change which signals are available, and would make
-``capture'' nearly free; the same accounting of wrong leads against sensing cost still applies.
-
 % ---------------------------------------------------------------------------
 \section{Related Work}
 
-\todo{Written from paper/research/related\_work.md once the references are verified.}
+\paragraph{Finding misplaced objects.}
+Tag-based finders sense an item's position when asked, at the price of a tag on every item and,
+for crowd-sourced networks, a finder device nearby~\cite{heinrich2021findmy}.
+Camera-based finders need no tags.
+Wearable systems discover the objects a user handles and show where each last
+appeared~\cite{yagi2021gofinder}, and assistive applications let blind or low-vision users teach a
+phone their own belongings~\cite{kacorri2017people,morrison2023findmythings}.
+Recent assistants word their answers as history~\cite{maniar2025mempal,xie2026linguistic}, and a
+benchmark gives each answer a validity window~\cite{forte2026egostream}.
+None decides whether to check.
+At the other extreme, a phone application stores no location and searches live on every
+request~\cite{florea2026visionaid}.
+\sys{} sits between the two.
+
+\paragraph{Maps of things that move.}
+Robotics models the probability that a map entry is still true: the persistence
+filter~\cite{rosen2016towards}, temporal persistence models that rank where a robot should
+search~\cite{toris2017temporal}, and stationarity scores that decay by a semantic prior and send
+the robot back to regions that are probably outdated~\cite{bogenberger2026glasses}.
+Recent preprints schedule re-perception under a budget from per-object move rates, finding recency
+alone a strong baseline~\cite{ghosh2026memory}; show that an agent trusting stale spatial memory
+can do worse than one with no memory~\cite{sun2026memory}; and let a large model choose at each
+step between consulting memory and acting~\cite{chen2025searching}.
+Our age and mobility signals come from this line.
+We differ in three ways.
+The decision is made once per query, when a person asks.
+The cost is a person's capture, not a robot's travel.
+And these systems take the observer's pose as known, whereas we treat its drift as a second reason
+to doubt a stored location.
+
+\paragraph{Deciding when to sense.}
+Mobile vision systems spend an expensive operation only when a cheap signal says the cached answer
+is no longer good: Glimpse sends only trigger frames for full
+recognition~\cite{chen2015glimpse}, and Frugal Following runs its detector only when
+needed~\cite{apicharttrisorn2019frugal}.
+Our policy is such a gate whose first stage is metadata and whose second stage is a capture by the
+user.
+The same structure appears in keeping a local copy of a remote source fresh when checking has a
+cost~\cite{cho2000synchronizing}.
 
 % ---------------------------------------------------------------------------
 \section{Conclusion}
 
-A remembered location is a statement about the past.
-\sys{} presents it as one, and spends a fresh look only where the evidence suggests the past may
-no longer hold.
+A remembered location is a statement about the past, and it can fail because the world moved or
+because the device did.
+\sys{} watches for both and spends a fresh look only where the evidence suggests the past may no
+longer hold.
 \todo{One sentence with the headline number once measured.}
-
-\begin{acks}
-\todo{Generative-AI disclosure, as the venue requires.}
-\end{acks}
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{refs}
