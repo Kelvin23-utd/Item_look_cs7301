@@ -1,0 +1,16 @@
+# Build outputs and machine-specific files
+FindBack/build/
+FindBack/app/build/
+FindBack/.gradle/
+FindBack/.kotlin/
+FindBack/.idea/
+FindBack/local.properties
+paper/build/
+__pycache__/
+.DS_Store
+
+# Study data and phone backups contain photos of private homes: keep them out of the repo.
+findback_data/
+findback_data_*/
+backups/
+analysis/*.png
