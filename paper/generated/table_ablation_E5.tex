@@ -1,0 +1,16 @@
+% F3 ablation, E5: which signals the capture decision may use. Same queries and protocol in every row.
+% Age only is a threshold on the logged memory age, oldest first; nothing is fitted. The other rows are the learned risk score.
+% AUC: the score against 'not at the marker', out of sample, with a 95% bootstrap interval over sessions.
+% Area: area under the wrong-lead rate against captures per query (0 to 1); smaller is better; capturing at random gives
+% the mean of the memory-only and always-verify wrong-lead rates.
+% Needs booktabs and xcolor. Generated; do not edit.
+\begin{tabular}{lrrr}
+\toprule
+Signals & AUC & 95\% CI & Area \\
+\midrule
+Age only (threshold, not fitted) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+World signals only & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Frame signals only & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+All signals & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+\bottomrule
+\end{tabular}

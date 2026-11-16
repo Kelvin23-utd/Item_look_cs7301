@@ -1,0 +1,56 @@
+== System summary ==
+sessions: 5   registrations: 8   cancelled: 6   rejected hits: 0
+crop source: {'detector': 8}
+hit type:    {'Point': 3, 'DepthPoint': 3, 'Plane': 2}
+name source: {'n/a': 8}
+with room reference: 0/8
+register latency ms (median): convert 54.8  detect 68.1  embed 18.7
+stored bytes/object (median): 64200.0
+verify latency ms (median): total 231.8  detect 81.4  embed (all crops) 100.4    inference calls/verify (median): 5.0
+
+== Queries with ground truth: 3 (present 3, absent 0) ==
+Paired (have a fresh capture): 2; without capture: 1
+Policy said VERIFY on 0/2 paired queries
+
+== Conditions on the paired set (threshold 0.75) ==
+condition         n  correct  WRONG  unc|pres  unc|abs  capt/q  calls/q
+-----------------------------------------------------------------------
+memory_only       2        2      0         0        0    0.00     0.00
+always_verify     2        1      0         1        0    1.00     5.00
+selective         2        2      0         0        0    0.00     0.00
+WRONG = current-location claim when the object was absent (the error the study targets).
+unc|pres = present but not confirmed (lost retrieval); unc|abs = correctly withheld.
+
+== Threshold sweep (always_verify): TPR = present confirmed, FPR = absent confirmed ==
+  tau 0.30   TPR  1.00   FPR   nan
+  tau 0.35   TPR  1.00   FPR   nan
+  tau 0.40   TPR  1.00   FPR   nan
+  tau 0.45   TPR  1.00   FPR   nan
+  tau 0.50   TPR  0.50   FPR   nan
+  tau 0.55   TPR  0.50   FPR   nan
+  tau 0.60   TPR  0.50   FPR   nan
+  tau 0.65   TPR  0.50   FPR   nan
+  tau 0.70   TPR  0.50   FPR   nan
+  tau 0.75   TPR  0.50   FPR   nan
+  tau 0.80   TPR  0.50   FPR   nan
+  tau 0.85   TPR  0.00   FPR   nan
+  tau 0.90   TPR  0.00   FPR   nan
+  tau 0.95   TPR  0.00   FPR   nan
+
+== Per query ==
+  ff5fbb39 59bde70b Food           truth=present policy=- src=SESSION   sim=-
+  ff5fbb39 c3d478bb object         truth=present policy=- src=SESSION   sim=0.82
+  ff5fbb39 d4967d0b object         truth=present policy=- src=SESSION   sim=0.50
+
+== Home map (v0.3) ==
+registrations with a map position: 0/8
+map fixes: none
+
+== Marker error by position source ==
+  none
+
+== Map fix jumps (refresh and manual fixes while located) ==
+  none
+
+== Queries by guidance mode at query start ==
+  none (no guidance mode logged; pre-v0.3 data)

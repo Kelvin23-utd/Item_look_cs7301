@@ -140,14 +140,22 @@ A user who finds an item somewhere else tells the app. Items → the item → "U
 
 In E3 a script decides what moves, at random. No pre-capture signal can predict that, and every record is older than the on-device rule's 30-minute limit, so the logged rule will verify every query. Reporting it as "selective" would show a saving of zero that says nothing. The paper therefore reports three things, and the on-device rule only as a labelled row.
 
-1. **Measured, frame staleness.** Among queries whose item was not moved (ground truth `present`), the marker is wrong when its error exceeds 0.30 m. Report how well the frame signals predict that (AUC with interval, from E1 and E3 together) and, on the paired E3 queries, the captures-against-wrong-leads curve of a policy that uses the frame signals only.
+1. **Measured, frame staleness.** Among queries whose item was not moved (ground truth `present`), the marker is wrong when its error exceeds 0.30 m. Report:
+   - the share of such markers, with counts;
+   - the Spearman correlation between marker error and metres walked since the fix, with an interval (this needs no threshold and works when few markers are over 0.30 m);
+   - how well the frame signals predict a marker over 0.30 m (AUC with interval), trained on `split=dev` queries of E1 and E3 and scored on `split=test` queries; an unmeasured `present` query counts as not stale;
+   - on paired E3 queries **with ground truth `present` only**, the captures-against-wrong-leads curve of a policy that uses the frame signals only. Scripted moves are left out here on purpose: no frame signal can see them, and they would swamp the effect.
 2. **Measured, verification behaviour.** From the paired E3 queries: the share of captures that confirm when the item is at the marker, and the share that confirm when it is not, overall and per ground-truth class, with intervals.
 3. **What-if curve for world staleness.** Using the two measured shares from item 2 (call them `c_p` and `c_s`), a base rate `b` of stale queries, and a staleness predictor with ROC points (`FPR`, `TPR`):
    - wrong-lead rate = `b × (1 − TPR × (1 − c_s))`
    - lost-retrieval rate = `(1 − b) × FPR × (1 − c_p)`
    - captures per query = `b × TPR + (1 − b) × FPR`
 
-   The predictor's ROC is the equal-variance binormal curve for a given AUC. Plot the captures per query needed to bring the wrong-lead rate within 5 percentage points of always verifying, against predictor AUC from 0.5 to 1, for `b` = 0.1, 0.3 and 0.5. Mark on the AUC axis every AUC actually measured (age only and all signals in E3; frame signals for frame staleness; any E5 data). The curve states what would have to be true of a home for selective verification to pay off; it is a model, and the paper must call it one.
+   The predictor's ROC is the equal-variance binormal curve for a given AUC, which is an assumption about its shape. The target is relative, so that base rates can be compared: the policy must capture 90% of the stale queries (`TPR` = 0.9), which gives 90% of the wrong-lead reduction that always verifying gives. Plot, against predictor AUC from 0.5 to 1 and for `b` = 0.1, 0.3 and 0.5: the captures per query this needs, and in a second panel the lost-retrieval rate it adds. Mark on the AUC axis the AUCs measured for world staleness over all queries (age only and all signals in E3; any E5 data). Do not mark the frame-staleness AUC there: it is measured on unmoved items only and is a different population. The curve states what would have to be true of a home for selective verification to pay off; it is a model, and the paper must call it one.
+
+   **Operating point** of a measured policy: the threshold with the fewest captures whose wrong-lead reduction on the dev split is at least 90% of always verifying's reduction on the dev split, applied unchanged to the test split.
+
+   Revised later on 2026-11-16, still before any study data: the first version used an absolute 5-point tolerance, which is not comparable across base rates, and marked the frame-staleness AUC on the what-if axis.
 
 Also on the measured policy figure: an age-only threshold policy.
 

@@ -1,0 +1,36 @@
+% T2 cost, a complete float. Latencies: median and 95th percentile over logged events; the register total is the sum of its stages.
+% Capture time: verify.msSinceNear + latency.totalMs of the first capture of a query (from reaching the item to the result).
+% Power rows: the Median column holds the mean over runs of the summed monitored rails (not the phone's total power); n = runs.
+% Energy per verification = (rail energy of a verifying run - tracking power x its duration) / verifications in it; n = verifications.
+% It is given only with 3 runs per mode and every verifying run above every tracking-only run; otherwise 'n too small' or 'not resolved'.
+% Needs booktabs and xcolor. Generated; do not edit.
+\begin{table}[t]
+\caption{Cost. Power is the sum of the monitored rails, averaged over runs.}
+\label{tab:cost}
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrr}
+\toprule
+Quantity & Median & 95th pct. & $n$ \\
+\midrule
+Register: convert (ms) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Register: detect (ms) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Register: embed (ms) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Register: total (ms) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+\midrule
+Verify: convert (ms) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Verify: detect (ms) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Verify: embed (ms) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Verify: total (ms) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+\midrule
+Calls per verification & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} \\
+Storage per item (kB) & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} \\
+Map file, largest (kB) & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} \\
+Capture time (s) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+\midrule
+Power, tracking (mW) & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} \\
+Power, verifying (mW) & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} \\
+Energy per verification (J) & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} \\
+\bottomrule
+\end{tabular}
+\end{table}

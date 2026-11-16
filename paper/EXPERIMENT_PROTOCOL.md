@@ -18,7 +18,7 @@ For the people running the experiments on the Pixel 8. What each experiment prov
 | Wed 18 | E2 for all items | 60 min |
 | Thu 19 | E3 rounds 1–2 | 60 min |
 | Fri 20 | E3 rounds 3–4; E4 with Claude over USB | 75 min |
-| Sat 21 | Second home if possible (E1 + two E3 rounds), or two more E3 rounds at another time of day | 90 min |
+| Sat 21 | Second home if possible (E1 + two E3 rounds, both tagged `home=B;...;split=test`), or two more E3 rounds at another time of day | 90 min |
 | Sun 22 – Mon 23 | Analysis, figures, slides and paper; redo anything that failed | |
 
 ## E0. Walk test (today, on the map you already made)
@@ -40,9 +40,11 @@ Check: the card names the right room, the arrow follows your walked path, and ea
 
 ## E1. Position accuracy across rooms and restarts
 
-Tag `home=A;exp=E1;split=test`, mode FREE.
+Mode FREE. The tag changes between steps, so set it each time.
 
-Repeat three times:
+First, in the same session in which you saved the items, with tag `home=A;exp=E1;split=dev`: for every item, Items → Find → walk to the ring → Done → "At the marker" → tap the true centre. This is the baseline before any restart.
+
+Then repeat three times, with tag `home=A;exp=E1;split=dev` for the first restart and `home=A;exp=E1;split=test` for the second and third:
 
 1. Swipe the app away, reopen it, go to the home spot and locate.
 2. For every item: Items → Find → walk to the ring → Done → "At the marker" → tap the true centre.
@@ -64,7 +66,7 @@ For each item: Items → Find → walk to the ring. Each time you press Verify a
 | 5 | Lights off or curtains closed | The item | dim |
 | 6, 7 | Take the item away; capture from the front and from the side | Nothing | default, angled |
 | 8, 9 | Put a clearly different object on the spot | A different object | default, angled |
-| 10, 11 | Put its look-alike on the spot, if it has one; capture from the front and from the side | A look-alike | default, angled |
+| 10–13 | Put its look-alike on the spot, if it has one; capture from the front, the side, close and far | A look-alike | default, angled, near, far |
 
 Then put the item back, press Done and choose "Skip (not usable)".
 

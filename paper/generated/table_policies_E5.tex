@@ -1,0 +1,22 @@
+% F3 table, E5: policy replay on the paired queries. Rates are per replayed query, with counts.
+% The on-device rule is the app's logged decision (query_start.policyVerify).
+% Frame signals, point chosen on dev: the fewest dev captures whose dev wrong-lead rate is within 5 points of always verifying.
+% Intervals: percentile bootstrap over sessions. Random and fixed-budget rows are expectations, so they have no counts.
+% Needs booktabs and xcolor. Generated; do not edit.
+\begin{tabular}{lrrrrrr}
+\toprule
+Policy & Captures/query & Calls/query & Wrong leads & 95\% CI & Lost retrievals & 95\% CI \\
+\midrule
+Memory only & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Always verify & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+On-device rule (logged) & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Oracle & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+\midrule
+Frame signals, point chosen on dev & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+\midrule
+Random, $p = 0.25$ & 0.25 & -- & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} & -- \\
+All signals, 0.25 captures per query & 0.25 & -- & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+Random, $p = 0.50$ & 0.50 & -- & \textcolor{red}{TBD} & -- & \textcolor{red}{TBD} & -- \\
+All signals, 0.50 captures per query & 0.50 & -- & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} & \textcolor{red}{TBD} \\
+\bottomrule
+\end{tabular}

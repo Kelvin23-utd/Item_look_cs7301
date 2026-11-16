@@ -1,0 +1,64 @@
+== System summary ==
+sessions: 11   registrations: 17   cancelled: 11   rejected hits: 0
+crop source: {'detector': 13, 'tap_window_large_box_rejected': 2, 'tap_window': 2}
+hit type:    {'Point': 3, 'DepthPoint': 9, 'Plane': 5}
+name source: {'n/a': 8, 'default': 4, 'typed': 5}
+with room reference: 0/17
+register latency ms (median): convert 58.1  detect 86.3  embed 13.4
+stored bytes/object (median): 54694.0
+verify latency ms (median): total 202.8  detect 81.5  embed (all crops) 35.7    inference calls/verify (median): 3.0
+
+== Queries with ground truth: 9 (present 7, absent 2) ==
+Paired (have a fresh capture): 7; without capture: 2
+Policy said VERIFY on 0/7 paired queries
+
+== Conditions on the paired set (threshold 0.75) ==
+condition         n  correct  WRONG  unc|pres  unc|abs  capt/q  calls/q
+-----------------------------------------------------------------------
+memory_only       7        6      1         0        0    0.00     0.00
+always_verify     7        4      0         2        1    1.00     3.29
+selective         7        6      1         0        0    0.00     0.00
+WRONG = current-location claim when the object was absent (the error the study targets).
+unc|pres = present but not confirmed (lost retrieval); unc|abs = correctly withheld.
+
+== Threshold sweep (always_verify): TPR = present confirmed, FPR = absent confirmed ==
+  tau 0.30   TPR  1.00   FPR  0.00
+  tau 0.35   TPR  1.00   FPR  0.00
+  tau 0.40   TPR  1.00   FPR  0.00
+  tau 0.45   TPR  1.00   FPR  0.00
+  tau 0.50   TPR  0.67   FPR  0.00
+  tau 0.55   TPR  0.67   FPR  0.00
+  tau 0.60   TPR  0.67   FPR  0.00
+  tau 0.65   TPR  0.67   FPR  0.00
+  tau 0.70   TPR  0.67   FPR  0.00
+  tau 0.75   TPR  0.67   FPR  0.00
+  tau 0.80   TPR  0.50   FPR  0.00
+  tau 0.85   TPR  0.17   FPR  0.00
+  tau 0.90   TPR  0.00   FPR  0.00
+  tau 0.95   TPR  0.00   FPR  0.00
+
+== Marker error (n=3): median 20 cm, max 567 cm ==
+
+== Per query ==
+  0919ba37 1ab6cf6b fan            truth=present policy=- src=SESSION   sim=0.78
+  0919ba37 2bb6e124 item 14        truth=present policy=- src=SESSION   sim=0.86
+  0919ba37 ab6fd8b7 holder         truth=present policy=- src=SESSION   sim=0.46
+  0919ba37 c199baba object         truth=absent  policy=- src=NONE      sim=-
+  0919ba37 c4f1f271 item 15        truth=absent  policy=- src=SESSION   sim=0.24
+  1debdfe5 c758e87d item 4         truth=present policy=- src=SESSION   sim=0.81
+  ff5fbb39 59bde70b Food           truth=present policy=- src=SESSION   sim=-
+  ff5fbb39 c3d478bb object         truth=present policy=- src=SESSION   sim=0.82
+  ff5fbb39 d4967d0b object         truth=present policy=- src=SESSION   sim=0.50
+
+== Home map (v0.3) ==
+registrations with a map position: 0/17
+map fixes: none
+
+== Marker error by position source ==
+  SESSION                    n=3   median 20 cm  max 567 cm  (horizontal median 17 cm)
+
+== Map fix jumps (refresh and manual fixes while located) ==
+  none
+
+== Queries by guidance mode at query start ==
+  none (no guidance mode logged; pre-v0.3 data)
