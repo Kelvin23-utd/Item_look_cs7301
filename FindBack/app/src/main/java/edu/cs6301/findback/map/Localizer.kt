@@ -285,7 +285,7 @@ class Localizer(
     activeFix = null
     drift.clear()
     graph.breakChain()
-    ui.toast("Map position lost: look at the picture or use a spot again.")
+    ui.toast("Lost the map position: press Locate at your home spot.")
   }
 
   // ------------------------------------------------------------------ picture fixes
@@ -357,7 +357,7 @@ class Localizer(
               FixPoint.at(newId(), "Picture", FixType.IMAGE, mapPose, axisName, refWidthM.toDouble(), null, System.currentTimeMillis(), sessionId),
               est,
             )
-            ui.toast("Picture saved as a fix point")
+            ui.toast("Picture saved: it can locate you from now on")
           }
         }
       }
@@ -444,8 +444,8 @@ class Localizer(
     if (old == null || (jump?.m ?: 0.0) > CHAIN_BREAK_JUMP_M) graph.breakChain()
     logFix(fix, est, if (old == null) "first" else kind, jump, prev, disagreement, accepted, applied = true, anchored = anchor != null)
     when {
-      old == null -> ui.toast("Located via ${fix.name}")
-      kind == "manual" && jump != null -> ui.toast("Re-fixed at %s: moved %.0f cm, %.0f°".format(fix.name, jump.m * 100, jump.deg))
+      old == null -> ui.toast("Located at \"${fix.name}\"")
+      kind == "manual" && jump != null -> ui.toast("Located again at \"%s\" (moved %.0f cm)".format(fix.name, jump.m * 100))
     }
   }
 
@@ -504,7 +504,7 @@ class Localizer(
   /** "Add a spot here" → Lock. Needs a located map, or no map at all (the spot becomes home). */
   fun startSpotCapture() {
     if (mapId != null && tWM == null) {
-      ui.lockFinished(false, "Locate first (look at the picture or use a spot), then add a spot.")
+      ui.lockFinished(false, "Press Locate first, then add a spot.")
       return
     }
     startLock(LockMode.CAPTURE, null)
@@ -568,7 +568,7 @@ class Localizer(
         val home = mapId == null
         val mapPose = if (home) null else tWM?.inverse()?.compose(est.pose)
         if (!home && mapPose == null) {
-          ui.lockFinished(false, "Map position lost during the capture; locate again.")
+          ui.lockFinished(false, "Lost the map position during the capture: press Locate, then try again.")
           return
         }
         ui.lockFinished(true, "")

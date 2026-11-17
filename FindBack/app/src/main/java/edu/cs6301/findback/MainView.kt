@@ -2,25 +2,17 @@ package edu.cs6301.findback
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
-import android.graphics.Typeface
 import android.opengl.GLSurfaceView
-import android.text.Editable
-import android.text.InputType
+import android.os.Looper
 import android.text.SpannableStringBuilder
 import android.text.Spanned
-import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
-import android.text.style.RelativeSizeSpan
-import android.text.style.StyleSpan
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewGroup
-import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -31,28 +23,60 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
-import com.google.ar.core.examples.java.common.helpers.SnackbarHelper
 import com.google.ar.core.examples.java.common.samplerender.SampleRender
+import edu.cs6301.findback.map.FixType
 import edu.cs6301.findback.map.GhostGeometry
-import edu.cs6301.findback.map.GuidancePlanner
+import edu.cs6301.findback.map.GuidanceMode
 import edu.cs6301.findback.map.Localizer
 import edu.cs6301.findback.map.Room
 import edu.cs6301.findback.memory.ObjectRecord
-import edu.cs6301.findback.policy.PolicyDecision
+import edu.cs6301.findback.policy.PositionSource
 import edu.cs6301.findback.policy.VerificationPolicy
-import edu.cs6301.findback.scan.InventoryEntry
 import edu.cs6301.findback.scan.InventoryText
 import edu.cs6301.findback.scan.ScanEnd
+import edu.cs6301.findback.study.CaptureRules
 import edu.cs6301.findback.study.GroundTruth
 import edu.cs6301.findback.study.Mobility
+import edu.cs6301.findback.study.StudySettings
 import edu.cs6301.findback.study.VerifyLabel
-import java.io.File
+import edu.cs6301.findback.ui.Action
+import edu.cs6301.findback.ui.FoundAnswer
+import edu.cs6301.findback.ui.GuideInput
+import edu.cs6301.findback.ui.Screen
+import edu.cs6301.findback.ui.Tone
+import edu.cs6301.findback.ui.UiButton
+import edu.cs6301.findback.ui.UiInput
+import edu.cs6301.findback.ui.UiModel
 import kotlin.math.abs
 
-/** All Android UI: overlays, buttons and dialogs. The renderer owns the AR state. */
+/**
+ * What the GL thread publishes about 5 times a second for the screen (v0.6). The rest of the
+ * screen state (query, "Moved it", scan, lock bar) is read live on the UI thread.
+ */
+class UiFrame(
+  val st: Localizer.State,
+  val tracking: Boolean,
+  /** A capture is being analysed. */
+  val busy: Boolean,
+  val itemCount: Int,
+  /** The query this frame's guidance describes, or null. */
+  val queryId: String?,
+  /** The guide card's cue for [queryId], or null. */
+  val cue: String?,
+  val scanItems: Int,
+  val scanHint: String?,
+  val mini: MiniMapView.Data?,
+)
+
+/**
+ * All Android UI: overlays, the top status area, the bottom card and buttons, and dialogs. The
+ * renderer owns the AR state. v0.6: the screen state, the instruction line and the bottom buttons
+ * come from [UiModel] (docs/PLAN_v0.6_ui.md).
+ */
 @SuppressLint("ClickableViewAccessibility")
 class MainView(val activity: MainActivity, private val renderer: FindBackRenderer) : DefaultLifecycleObserver {
   companion object {
@@ -61,34 +85,19 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
     val RED = Color.rgb(0xEF, 0x53, 0x50)
     val GREY = Color.rgb(0x9E, 0x9E, 0x9E)
 
-    fun ago(ms: Long): String {
-      val s = (System.currentTimeMillis() - ms) / 1000
-      return when {
-        s < 60 -> "${s}s ago"
-        s < 3600 -> "${s / 60} min ago"
-        s < 86400 -> "${s / 3600} h ago"
-        else -> "${s / 86400} d ago"
+    fun toneColor(t: Tone): Int =
+      when (t) {
+        Tone.NORMAL -> Color.WHITE
+        Tone.GOOD -> GREEN
+        Tone.WARN -> AMBER
+        Tone.BAD -> RED
+        Tone.MUTED -> GREY
       }
-    }
-  }
 
-  /** Second status dot: is the home map located in this session? */
-  enum class LocState { NO_MAP, NOT_LOCATED, LOCATED }
-
-  /** v0.5: the bottom-bar scan control. */
-  enum class ScanControl { HIDDEN, START, STOP }
-
-  /** v0.5: what the Items list does with a scanned entry. */
-  class EntryActions(
-    val onFind: (InventoryEntry) -> Unit,
-    val onRename: (InventoryEntry, String) -> Unit,
-    val onDelete: (InventoryEntry) -> Unit,
-  )
-
-  /** One row of the Items list: a tapped record or a scanned entry. */
-  private class ItemRow(val record: ObjectRecord?, val entry: InventoryEntry?) {
-    val lastSeenMs: Long
-      get() = record?.lastSeenMs ?: entry!!.lastSeenMs
+    /** A short message shows this long; one longer than [LONG_MESSAGE] characters a bit longer. */
+    const val BANNER_MS = 3000L
+    const val BANNER_LONG_MS = 5000L
+    const val LONG_MESSAGE = 60
   }
 
   val root: View = View.inflate(activity, R.layout.activity_main, null)
@@ -97,39 +106,56 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       SampleRender(this, renderer, activity.assets)
     }
   val overlay: GuidanceOverlay = root.findViewById(R.id.guidanceOverlay)
-  private val statusText: TextView = root.findViewById(R.id.statusText)
-  private val hintText: TextView = root.findViewById(R.id.hintText)
+  val scanOverlay: ScanOverlay = root.findViewById(R.id.scanOverlay)
+  val miniMap: MiniMapView = root.findViewById(R.id.miniMap)
+  private val ghostImage: ImageView = root.findViewById(R.id.ghostImage)
+
+  // Top.
+  private val statusPill: TextView = root.findViewById(R.id.statusPill)
+  private val studyLine: TextView = root.findViewById(R.id.studyLine)
+  private val instructionText: TextView = root.findViewById(R.id.instructionText)
+  private val banner: TextView = root.findViewById(R.id.messageBanner)
+
+  // Bottom cards.
+  private val lockBar: View = root.findViewById(R.id.lockBar)
+  private val lockTitle: TextView = root.findViewById(R.id.lockTitle)
+  private val lockText: TextView = root.findViewById(R.id.lockText)
   private val guideCard: View = root.findViewById(R.id.guideCard)
   private val guideThumb: ImageView = root.findViewById(R.id.guideThumb)
   private val guideTitle: TextView = root.findViewById(R.id.guideTitle)
   private val guideSubtitle: TextView = root.findViewById(R.id.guideSubtitle)
   private val guideCue: TextView = root.findViewById(R.id.guideCue)
+  private val guideStatus: TextView = root.findViewById(R.id.guideStatus)
+  private val guideLocate: Button = root.findViewById(R.id.guideLocate)
   private val guidePolicy: TextView = root.findViewById(R.id.guidePolicy)
-  private val guideVerify: TextView = root.findViewById(R.id.guideVerify)
-  val itemsButton: Button = root.findViewById(R.id.itemsButton)
-  val verifyButton: Button = root.findViewById(R.id.verifyButton)
-  val doneButton: Button = root.findViewById(R.id.doneButton)
-  val scanButton: Button = root.findViewById(R.id.scanButton)
-  val scanOverlay: ScanOverlay = root.findViewById(R.id.scanOverlay)
-  val miniMap: MiniMapView = root.findViewById(R.id.miniMap)
-  private val roomChip: TextView = root.findViewById(R.id.roomChip)
-  private val ghostImage: ImageView = root.findViewById(R.id.ghostImage)
-  private val lockBar: View = root.findViewById(R.id.lockBar)
-  private val lockText: TextView = root.findViewById(R.id.lockText)
-  private val lockButton: Button = root.findViewById(R.id.lockButton)
-  private val lockCancel: Button = root.findViewById(R.id.lockCancel)
+  private val scanBar: View = root.findViewById(R.id.scanBar)
+  private val scanTitle: TextView = root.findViewById(R.id.scanTitle)
+  private val scanHint: TextView = root.findViewById(R.id.scanHint)
+  private val welcomeCard: View = root.findViewById(R.id.welcomeCard)
+  private val welcomePicture: View = root.findViewById(R.id.welcomePicture)
+
+  // Bottom bar.
+  private val secondaryButton: Button = root.findViewById(R.id.secondaryButton)
+  private val primaryButton: Button = root.findViewById(R.id.primaryButton)
+  private val buttonGap: View = root.findViewById(R.id.buttonGap)
+
   val dialogs = LocationDialogs(activity, renderer, this)
+  val items = ItemsPanel(activity, root)
+
+  /** The bottom-bar actions other than Lock and Cancel (the renderer handles them). */
+  var onAction: ((Action) -> Unit)? = null
 
   /** True while the spot lock bar (and maybe the ghost) is shown; camera taps are ignored then. */
   var lockModeActive = false
     private set
   private var lockInstructions = ""
+  private var onLock: (() -> Unit)? = null
+  private var onLockCancel: (() -> Unit)? = null
 
-  private val snackbar =
-    SnackbarHelper().apply {
-      setParentView(root.findViewById(R.id.coordinatorLayout))
-      setMaxLines(4)
-    }
+  /** The latest frame from the GL thread; null until the first one. */
+  private var frame: UiFrame? = null
+  /** The screen as last drawn, for Back. */
+  private var screen: Screen? = null
 
   init {
     val gestures =
@@ -146,59 +172,47 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
         }
       )
     surfaceView.setOnTouchListener { _, event -> gestures.onTouchEvent(event) }
-    // A single tap or a long-press on the status panel opens the location sheet.
-    val statusPanel = root.findViewById<View>(R.id.statusPanel)
-    statusPanel.setOnClickListener { dialogs.showSheet(renderer.uiState) }
-    statusPanel.setOnLongClickListener {
-      dialogs.showSheet(renderer.uiState)
-      true
-    }
-    roomChip.setOnClickListener {
-      val st = renderer.uiState
-      val map = st?.map ?: return@setOnClickListener toast("Set home first: rooms belong to the home map.")
-      dialogs.pickRoom(map.rooms, st.currentRoomId) { id, newRoom -> renderer.requestPickRoom(id, newRoom, "chip") }
-    }
-  }
 
-  /** Location sheet → Picture width: set the measured width of the reference picture. */
-  fun showReferenceSettings() {
-    val current = activity.refWidthM * 100f
-    val edit =
-      EditText(activity).apply {
-        inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
-        setText("%.1f".format(current))
-        selectAll()
-      }
-    val box =
-      LinearLayout(activity).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(20), dp(8), dp(20), 0)
-        addView(
-          TextView(activity).apply {
-            text =
-              "Width of the Earth picture as it appears in the room, in cm.\n\n" +
-                "Printed A4 sheet: 20.0\n" +
-                "iPad mini 6/7, full screen: about 11.6\n" +
-                "iPad mini 5, full screen: about 12.0\n\n" +
-                "Measure with a ruler if you can. Set this before saving objects and keep the " +
-                "picture in the same place; the app restarts to apply it."
+    // The pill picks the room when a map exists, otherwise it opens the menu.
+    statusPill.setOnClickListener {
+      val st = renderer.uiState ?: return@setOnClickListener toast("Starting…")
+      val map = st.map
+      if (map == null) dialogs.showSheet(st)
+      else dialogs.pickRoom(map.rooms, st.currentRoomId) { id, newRoom -> renderer.requestPickRoom(id, newRoom, "chip") }
+    }
+    root.findViewById<View>(R.id.menuButton).setOnClickListener {
+      val st = renderer.uiState
+      if (st == null) toast("Starting…") else dialogs.showSheet(st)
+    }
+    banner.setOnClickListener { hideBanner.run() }
+
+    secondaryButton.setOnClickListener { v -> (v.tag as? Action)?.let { dispatch(it) } }
+    primaryButton.setOnClickListener { v -> (v.tag as? Action)?.let { dispatch(it) } }
+    guideLocate.setOnClickListener { dispatch(Action.LOCATE) }
+    guideStatus.setOnClickListener { showLastCapture() }
+
+    // Section 8: Back closes the Items panel, cancels the lock bar or "Moved it", and does not
+    // leave the app during a search or a scan.
+    activity.onBackPressedDispatcher.addCallback(
+      activity,
+      object : OnBackPressedCallback(true) {
+        override fun handleOnBackPressed() {
+          when {
+            items.isOpen -> items.close()
+            lockModeActive -> dispatch(Action.CANCEL_LOCK)
+            screen == Screen.FINDING -> toast("Press Done to end the search")
+            screen == Screen.MEASURING -> toast("Tap the true centre, or press Skip")
+            screen == Screen.SCANNING -> toast("Press Stop scan first")
+            screen == Screen.UPDATING -> dispatch(Action.CANCEL_UPDATE)
+            else -> {
+              isEnabled = false
+              activity.onBackPressedDispatcher.onBackPressed()
+              isEnabled = true
+            }
           }
-        )
-        addView(edit)
-      }
-    AlertDialog.Builder(activity)
-      .setTitle("Room reference size")
-      .setView(box)
-      .setPositiveButton("Save") { _, _ ->
-        val cm = edit.text.toString().toFloatOrNull()
-        if (cm == null || cm < 3f || cm > 100f) {
-          toast("Enter a width between 3 and 100 cm.")
-        } else if (abs(cm - current) > 0.05f) {
-          activity.setRefWidthM(cm / 100f)
         }
-      }
-      .setNegativeButton("Cancel", null)
-      .show()
+      },
+    )
   }
 
   override fun onResume(owner: LifecycleOwner) = surfaceView.onResume()
@@ -209,78 +223,173 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
     root.post { action() }
   }
 
-  fun toast(message: String) = snackbar.showMessageForShortDuration(activity, message)
-
-  // ------------------------------------------------------------------ status panel
-
-  fun renderStatus(
-    tracking: Boolean,
-    trackingDetail: String,
-    loc: LocState,
-    locLine: String,
-    items: Int,
-    hint: String,
-    roomChipText: String?,
-    /** v0.4: capture mode and study tag, or null when neither is set (FREE, no tag). */
-    studyLine: String? = null,
-  ) {
-    val s = SpannableStringBuilder()
-    fun dot(color: Int) {
-      val start = s.length
-      s.append("● ")
-      s.setSpan(ForegroundColorSpan(color), start, s.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-    }
-    dot(if (tracking) GREEN else RED)
-    s.append(if (tracking) "Tracking" else "Tracking: $trackingDetail")
-    s.append("    ")
-    dot(
-      when (loc) {
-        LocState.LOCATED -> GREEN
-        LocState.NOT_LOCATED -> AMBER
-        LocState.NO_MAP -> GREY
+  private fun dispatch(a: Action) {
+    when (a) {
+      Action.LOCK -> {
+        lockText.text = "Hold still…"
+        onLock?.invoke()
       }
-    )
-    s.append(locLine)
-    s.append("    $items items")
-    if (studyLine != null) s.append("\n").append(studyLine)
-    statusText.text = s
-    hintText.text = hint
-    if (roomChipText == null) roomChip.visibility = View.GONE
-    else {
-      roomChip.visibility = View.VISIBLE
-      roomChip.text = "Room: $roomChipText ▾"
+      Action.CANCEL_LOCK -> {
+        onLockCancel?.invoke()
+        exitLockMode()
+      }
+      else -> onAction?.invoke(a)
     }
+  }
+
+  // ------------------------------------------------------------------ message banner
+
+  private val hideBanner = Runnable { banner.visibility = View.GONE }
+
+  /**
+   * Section 5.1: a short message in the banner below the instruction line, for 3 s (5 s when
+   * long). A new message replaces the old one; a tap dismisses it. Any thread.
+   */
+  fun toast(message: String) {
+    if (Looper.myLooper() != Looper.getMainLooper()) {
+      root.post { toast(message) }
+      return
+    }
+    if (message.isEmpty()) return
+    banner.removeCallbacks(hideBanner)
+    banner.text = message
+    banner.visibility = View.VISIBLE
+    banner.postDelayed(hideBanner, if (message.length > LONG_MESSAGE) BANNER_LONG_MS else BANNER_MS)
+  }
+
+  // ------------------------------------------------------------------ screen
+
+  /** UI thread: a new frame from the GL thread. */
+  fun render(f: UiFrame) {
+    frame = f
+    miniMap.setData(f.mini)
+    refresh()
+  }
+
+  /**
+   * UI thread: draw the screen from the latest frame and the live state. Called for every frame and
+   * at once after every change of query, "Moved it", scan or lock bar, so buttons switch without
+   * waiting for the next frame.
+   */
+  fun refresh() {
+    val f = frame
+    if (f == null) {
+      statusPill.text = pillText("Starting…", GREY, false)
+      return
+    }
+    val st = f.st
+    val q = renderer.query
+    val upd = renderer.updateTarget
+    val scan = renderer.scan.active
+    val hasSpots = st.map?.fixPoints?.any { it.type == FixType.SPOT } == true
+    val input =
+      UiInput(
+        lockActive = lockModeActive,
+        queryActive = q != null,
+        measuring = q?.measuring == true,
+        updating = upd != null,
+        scanning = scan != null,
+        hasMap = st.hasMap,
+        located = st.located,
+        tracking = f.tracking,
+        busy = f.busy,
+        roomName = st.roomName(st.currentRoomId),
+        itemCount = f.itemCount,
+        pictureUsable = st.pictureUsable,
+        hasSpots = hasSpots,
+        guidanceMode = q?.mode,
+        itemName = q?.record?.name ?: upd?.name,
+        studyMode = q?.studyMode == true,
+        verifyAllowed = q?.let { CaptureRules.verifyAllowed(it.captureMode, it.captures) } ?: true,
+        resolvable = q?.resolvable == true,
+        policyRecommends = q?.decision?.verify == true,
+      )
+    val s = UiModel.screen(input)
+    screen = s
+
+    // Top.
+    val pill = UiModel.pill(input)
+    statusPill.text = pillText(pill.text, toneColor(pill.tone), pill.opensRoomPicker)
+    val study = StudySettings.statusLine(activity.studyTag, activity.captureMode)
+    studyLine.text = study
+    studyLine.visibility = if (study == null) View.GONE else View.VISIBLE
+    val instruction = UiModel.instruction(input)
+    instructionText.text = instruction
+    instructionText.visibility = if (instruction == null) View.GONE else View.VISIBLE
+
+    // Bottom card.
+    lockBar.visibility = if (s == Screen.LOCKING) View.VISIBLE else View.GONE
+    // The card waits for enterGuideMode of this query, so it never shows the previous item.
+    val guideReady =
+      when (s) {
+        Screen.FINDING, Screen.MEASURING -> q != null && guideQueryId == q.id
+        Screen.UPDATING -> true
+        else -> false
+      }
+    guideCard.visibility = if (guideReady) View.VISIBLE else View.GONE
+    scanBar.visibility = if (s == Screen.SCANNING) View.VISIBLE else View.GONE
+    welcomeCard.visibility = if (s == Screen.NO_MAP) View.VISIBLE else View.GONE
+    when (s) {
+      Screen.FINDING, Screen.MEASURING -> if (q != null) drawGuide(q, f, st.located, hasSpots)
+      Screen.UPDATING -> if (upd != null) drawUpdate(upd, st.located, hasSpots)
+      Screen.SCANNING -> {
+        scanTitle.text = UiModel.scanTitle(scan?.itemCount ?: f.scanItems)
+        scanHint.text = f.scanHint ?: UiModel.scanHint(st.located, st.lockActive, false)
+      }
+      // Without a map the picture is not a fix point yet, but it can still set home (once asked).
+      Screen.NO_MAP -> welcomePicture.visibility = if (st.setHomeDeclined) View.GONE else View.VISIBLE
+      else -> {}
+    }
+
+    // Bottom bar.
+    val b = UiModel.buttons(s, input)
+    bind(secondaryButton, b.secondary)
+    bind(primaryButton, b.primary)
+    buttonGap.visibility = if (b.secondary != null && b.primary != null) View.VISIBLE else View.GONE
+  }
+
+  private fun bind(button: Button, spec: UiButton?) {
+    if (spec == null) {
+      button.visibility = View.GONE
+      button.tag = null
+      return
+    }
+    button.tag = spec.action
+    if (button.text.toString() != spec.label) button.text = spec.label
+    button.visibility = View.VISIBLE
+  }
+
+  private fun pillText(text: String, color: Int, arrow: Boolean): CharSequence {
+    val s = SpannableStringBuilder("● ")
+    s.setSpan(ForegroundColorSpan(color), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+    s.append(text)
+    if (arrow) s.append(" ▾")
+    return s
   }
 
   // ------------------------------------------------------------------ spot lock / ghost
 
   /**
-   * Show the lock bar (and the ghost image when given), hide the guide card meanwhile. Lock and
-   * Cancel go to the renderer; the localizer ends the mode through [exitLockMode].
+   * Show the lock bar (and the ghost image when given). Lock and Cancel are the bottom buttons; the
+   * localizer ends the mode through [exitLockMode].
    */
-  fun enterLockMode(text: String, ghost: Bitmap?, onLock: () -> Unit, onCancel: () -> Unit) {
+  fun enterLockMode(title: String, text: String, ghost: Bitmap?, onLock: () -> Unit, onCancel: () -> Unit) {
     lockModeActive = true
     lockInstructions = text
+    lockTitle.text = title
     lockText.text = text
-    guideCard.visibility = View.GONE
-    lockBar.visibility = View.VISIBLE
-    lockButton.setOnClickListener {
-      lockText.text = "Hold still…"
-      onLock()
-    }
-    lockCancel.setOnClickListener {
-      onCancel()
-      exitLockMode()
-    }
+    this.onLock = onLock
+    onLockCancel = onCancel
     if (ghost != null) {
       ghostImage.setImageBitmap(ghost)
       placeGhost(ghost)
       ghostImage.visibility = View.VISIBLE
     } else {
-      // Entering "Add a spot here" from an open "Use a spot" must not keep the old ghost.
+      // Entering "Add a spot here" from an open Locate must not keep the old ghost.
       ghostImage.visibility = View.GONE
       ghostImage.setImageBitmap(null)
     }
+    refresh()
   }
 
   /**
@@ -312,135 +421,191 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
   fun exitLockMode() {
     if (!lockModeActive) return
     lockModeActive = false
-    lockBar.visibility = View.GONE
+    onLock = null
+    onLockCancel = null
     ghostImage.visibility = View.GONE
     ghostImage.setImageBitmap(null)
-    // A search, or "Update location", is still running.
-    if (renderer.query != null || renderer.updateTarget != null) guideCard.visibility = View.VISIBLE
+    refresh()
   }
 
   // ------------------------------------------------------------------ guide card
 
-  private var outcomeShown = false
-  private var guideLastSeenMs = 0L
+  /** The query the guide card was set up for, and its fixed parts. */
+  private var guideQueryId: String? = null
+  private var guideRoomName: String? = null
+  private var guideLastCue: String? = null
+  private var guideOpensResult = false
 
-  fun enterGuideMode(rec: ObjectRecord, thumb: Bitmap?, decision: PolicyDecision, hasLocation: Boolean, roomName: String?) {
+  /** Everyday mode: the last capture of the query, shown when its status line is tapped. */
+  private class LastCapture(val queryId: String, val stored: Bitmap?, val fresh: Bitmap, val similarity: Float, val confirmed: Boolean)
+
+  private var lastCapture: LastCapture? = null
+
+  fun enterGuideMode(q: Query, thumb: Bitmap?, roomName: String?) {
+    guideQueryId = q.id
+    guideRoomName = roomName
+    guideLastCue = null
+    lastCapture = null
     guideThumb.setImageBitmap(thumb)
-    guideTitle.text = rec.name
-    guideLastSeenMs = rec.lastSeenMs
-    guideSubtitle.text = "Last seen ${ago(rec.lastSeenMs)} · historical location"
-    guideCue.text = GuidancePlanner.roomPhrase(roomName)
-    guidePolicy.text =
-      when {
-        !hasLocation -> "Policy: no location at query start, so no verification decision"
-        decision.verify -> "Verification recommended: " + decision.reasons.joinToString("; ")
-        else -> "Policy: no verification needed (" + decision.reasons.joinToString("; ") + ")"
-      }
-    guidePolicy.setTextColor(if (decision.verify) AMBER else GREY)
-    setVerifyLine(null, null)
-    guideCard.visibility = if (lockModeActive) View.GONE else View.VISIBLE
-    verifyButton.isEnabled = true
-    verifyButton.text = if (decision.verify) "Verify ★" else "Verify"
-    doneButton.isEnabled = true
-    doneButton.text = "Done"
-    itemsButton.isEnabled = false
-  }
-
-  fun setGuideCue(cue: String, hasLocation: Boolean, near: Boolean = true) {
-    guideCue.text = cue
-    guideSubtitle.text = "Last seen ${ago(guideLastSeenMs)} · historical location"
-    if (!outcomeShown && doneButton.text != "Skip") {
-      guideVerify.text =
+    guideTitle.text = q.record.name
+    guideCue.text = UiModel.cue(q.mode, roomName, q.routeM, q.straightM, renderer.uiState?.located == true, null)
+    val hasLocation = q.inputs.positionSource != PositionSource.NONE
+    val decision = q.decision
+    if (q.studyMode) {
+      // Study mode keeps the v0.5 policy line with its reasons.
+      guidePolicy.text =
         when {
-          !hasLocation -> "Verification needs a location: go to a fix point (picture or spot)"
-          near -> "Not verified yet: aim at the ring and tap Verify"
-          else -> "Not verified yet: walk closer; Verify once the ring is on the item"
+          !hasLocation -> "Policy: no location at query start, so no verification decision"
+          decision.verify -> "Verification recommended: " + decision.reasons.joinToString("; ")
+          else -> "Policy: no verification needed (" + decision.reasons.joinToString("; ") + ")"
         }
-      guideVerify.setTextColor(if (hasLocation) Color.WHITE else GREY)
+      guidePolicy.setTextColor(if (decision.verify) AMBER else GREY)
+      guidePolicy.visibility = View.VISIBLE
+    } else {
+      guidePolicy.visibility = View.GONE
     }
+    refresh()
   }
 
-  fun setVerifyLine(outcome: String?, similarity: Float?) {
-    outcomeShown = outcome != null
-    when (outcome) {
-      null -> {
-        guideVerify.text = "Not verified yet: aim at the ring and tap Verify"
-        guideVerify.setTextColor(Color.WHITE)
-      }
-      "CONFIRMED" -> {
-        guideVerify.text = "✓ Seen here now (similarity %.2f)".format(similarity ?: 0f)
-        guideVerify.setTextColor(GREEN)
-      }
-      else -> {
-        guideVerify.text =
-          "? Not confirmed (%.2f): insufficient evidence, may still be here".format(similarity ?: 0f)
-        guideVerify.setTextColor(AMBER)
-      }
-    }
+  private fun drawGuide(q: Query, f: UiFrame, located: Boolean, hasSpots: Boolean) {
+    if (guideQueryId != q.id) return // enterGuideMode has not run yet for this query
+    guideSubtitle.text = UiModel.guideSubtitle(guideRoomName, InventoryText.ago(q.record.lastSeenMs, System.currentTimeMillis()))
+    if (f.queryId == q.id && f.cue != null) guideLastCue = f.cue
+    guideLastCue?.let { if (guideCue.text.toString() != it) guideCue.text = it }
+    val status =
+      UiModel.guideStatus(
+        GuideInput(
+          studyMode = q.studyMode,
+          measuring = q.measuring,
+          displaced = q.truth == GroundTruth.DISPLACED,
+          lastOutcome = q.lastOutcome,
+          lastSimilarity = q.lastSimilarity,
+          located = located,
+          resolvable = q.resolvable,
+          near = q.mode == GuidanceMode.NEAR,
+          hasSpots = hasSpots,
+          recommend = q.decision.verify && q.inputs.positionSource != PositionSource.NONE,
+        )
+      )
+    guideStatus.text = status.text
+    guideStatus.setTextColor(toneColor(status.tone))
+    guideOpensResult = status.opensResult
+    guideLocate.visibility = if (status.showLocate && !q.measuring) View.VISIBLE else View.GONE
   }
 
-  /** After ground truth "present" (marker error) or "displaced" (how far the item moved). */
-  fun enterMeasureMode(displaced: Boolean = false) {
-    guideVerify.text =
-      if (displaced) "Tap the item's true centre where it is now to measure the displacement, or tap Skip"
-      else "Tap the object's true centre to measure marker error, or tap Skip"
-    guideVerify.setTextColor(Color.WHITE)
-    verifyButton.isEnabled = false
-    doneButton.text = "Skip"
+  /** Everyday mode: keep the capture for a tap on the status line (instead of a modal). */
+  fun setLastCapture(queryId: String, stored: Bitmap?, fresh: Bitmap, similarity: Float, confirmed: Boolean) {
+    if (renderer.query?.id != queryId) return
+    lastCapture = LastCapture(queryId, stored, fresh, similarity, confirmed)
+    refresh()
+  }
+
+  private fun showLastCapture() {
+    if (!guideOpensResult) return
+    val c = lastCapture ?: return
+    if (renderer.query?.id != c.queryId) return
+    showVerifyResult(c.stored, c.fresh, c.similarity, c.confirmed, study = false)
   }
 
   fun exitGuideMode() {
-    guideCard.visibility = View.GONE
+    guideQueryId = null
+    guideLastCue = null
+    lastCapture = null
+    guideOpensResult = false
     guideThumb.setImageBitmap(null)
+    guidePolicy.visibility = View.GONE
+    guideLocate.visibility = View.GONE
     overlay.setTarget(null)
-    verifyButton.isEnabled = false
-    verifyButton.text = "Verify"
-    doneButton.isEnabled = false
-    doneButton.text = "Done"
-    itemsButton.isEnabled = true
+    refresh()
   }
 
-  /**
-   * v0.4 "Update location": the guide card shows the item and asks for a tap on it where it is now.
-   * Done becomes Cancel; Items and Verify are off, as during a search.
-   */
-  fun enterUpdateMode(rec: ObjectRecord, thumb: Bitmap?) {
+  /** "Moved it" (v0.4 Update location): the guide card shows the item and asks for a tap on it where it is now. */
+  fun enterUpdateMode(rec: ObjectRecord, thumb: Bitmap?, roomName: String?) {
+    guideQueryId = null
+    lastCapture = null
+    guideOpensResult = false
     guideThumb.setImageBitmap(thumb)
-    guideTitle.text = "Update location of " + rec.name
-    guideLastSeenMs = rec.lastSeenMs
-    guideSubtitle.text = "Last seen ${ago(rec.lastSeenMs)} at the old location"
+    guideTitle.text = rec.name
+    guideSubtitle.text =
+      "Old place: " + (roomName?.let { "$it · " } ?: "") + "saved " + InventoryText.ago(rec.lastSeenMs, System.currentTimeMillis())
     guideCue.text = "Tap it where it is now"
-    guidePolicy.text = "Saving replaces the old location. The old photo and logs are kept."
-    guidePolicy.setTextColor(GREY)
-    outcomeShown = false
-    guideVerify.text = "Cancel keeps the old location."
-    guideVerify.setTextColor(Color.WHITE)
-    guideCard.visibility = if (lockModeActive) View.GONE else View.VISIBLE
-    verifyButton.isEnabled = false
-    verifyButton.text = "Verify"
-    doneButton.isEnabled = true
-    doneButton.text = "Cancel"
-    itemsButton.isEnabled = false
+    guidePolicy.visibility = View.GONE
+    refresh()
+  }
+
+  private fun drawUpdate(rec: ObjectRecord, located: Boolean, hasSpots: Boolean) {
+    if (guideQueryId != null) return
+    if (guideTitle.text.toString() != rec.name) guideTitle.text = rec.name
+    val locate = !located && hasSpots
+    guideStatus.text =
+      if (locate) "Not located: press Locate first, or the new place is kept for this session only"
+      else "Saving replaces the old place. Cancel keeps it."
+    guideStatus.setTextColor(if (locate) AMBER else GREY)
+    guideLocate.visibility = if (locate) View.VISIBLE else View.GONE
   }
 
   fun exitUpdateMode() = exitGuideMode()
 
   // ------------------------------------------------------------------ dialogs
 
+  /** Home sheet → Settings → Picture width: set the measured width of the reference picture. */
+  fun showReferenceSettings() {
+    val current = activity.refWidthM * 100f
+    val edit =
+      EditText(activity).apply {
+        inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+        setText("%.1f".format(current))
+        selectAll()
+      }
+    val box =
+      LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(20), dp(8), dp(20), 0)
+        addView(
+          TextView(activity).apply {
+            text =
+              "Width of the Earth picture as it appears in the room, in cm.\n\n" +
+                "Printed A4 sheet: 20.0\n" +
+                "iPad mini 6/7, full screen: about 11.6\n" +
+                "iPad mini 5, full screen: about 12.0\n\n" +
+                "Measure with a ruler if you can. Set this before saving objects and keep the " +
+                "picture in the same place; the app restarts to apply it."
+          }
+        )
+        addView(edit)
+      }
+    AlertDialog.Builder(activity)
+      .setTitle("Picture width")
+      .setView(box)
+      .setPositiveButton("Save") { _, _ ->
+        val cm = edit.text.toString().toFloatOrNull()
+        if (cm == null || cm < 3f || cm > 100f) {
+          toast("Enter a width between 3 and 100 cm.")
+        } else if (abs(cm - current) > 0.05f) {
+          activity.setRefWidthM(cm / 100f)
+        }
+      }
+      .setNegativeButton("Cancel", null)
+      .show()
+  }
+
   /**
+   * Section 6.6: the photo, warnings in plain words, the name (pre-filled with [defaultName]; a tap
+   * selects it, so typing replaces it) and the room. Study mode adds the v0.5 debug line and the
+   * mobility choice; in everyday mode the mobility is the record's value on an update, else
+   * [Mobility.DEFAULT].
+   *
    * [onSave] gets the room chosen in the dialog, whether the user picked it explicitly (an explicit
    * pick also sets the current room and relabels nearby trail), a room created here, if any, and
-   * the mobility class (v0.4: "rare", "some" or "often").
-   *
-   * With [update] (v0.4 "Update location") the dialog is titled "Update location of X" and starts
-   * with that record's name and mobility; `typed` then means the name was changed. The room starts
-   * as the room of the capture, or the record's old room when the capture has none.
+   * the mobility class. `typed` is true only when the saved name differs from [defaultName] (a new
+   * item) or from the record's name ([update], "Moved it").
    */
   fun showRegisterDialog(
     d: RegistrationDraft,
     defaultName: String,
     rooms: List<Room>,
     update: ObjectRecord? = null,
+    studyMode: Boolean,
     onSave: (name: String, typed: Boolean, roomId: String?, picked: Boolean, newRoom: Room?, mobility: String) -> Unit,
     onCancel: () -> Unit
   ) {
@@ -449,6 +614,8 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(pad, pad / 2, pad, 0)
+        // Takes the dialog's first focus, so the first tap on the name selects all of it.
+        isFocusableInTouchMode = true
       }
     layout.addView(
       ImageView(activity).apply {
@@ -457,26 +624,13 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
         maxHeight = dp(220)
       }
     )
-    val detectorText =
-      if (d.rawLabel.isEmpty()) "no category" else "%s (%.2f)".format(d.rawLabel, d.rawConfidence)
-    layout.addView(
-      TextView(activity).apply {
-        textSize = 12f
-        text =
-          "Detector: $detectorText · crop: ${d.boxSource}\n" +
-            "%.2f m away · %s · map: %s".format(
-              d.captureDistance,
-              d.hitType,
-              if (d.mapPosition != null) "yes" else "NO (this session only)"
-            )
-      }
-    )
     if (d.captureDistance > 1.5f) {
       layout.addView(
         TextView(activity).apply {
           textSize = 13f
           setTextColor(AMBER)
-          text = "%.1f m away: for a reliable photo, stand 0.5–1 m from the object.".format(d.captureDistance)
+          setPadding(0, dp(6), 0, 0)
+          text = "%.1f m away: stand 0.5–1 m from the object for a reliable photo".format(d.captureDistance)
         }
       )
     }
@@ -485,12 +639,20 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
         TextView(activity).apply {
           textSize = 13f
           setTextColor(RED)
-          text =
-            "Not located: this item is valid for this session only. Look at the picture or use a spot " +
-              "first to save it on the home map."
+          setPadding(0, dp(6), 0, 0)
+          text = "Not located: this item is saved for this session only. Press Locate first to put it on the home map."
         }
       )
     }
+    val baseline = update?.name ?: defaultName
+    val edit =
+      EditText(activity).apply {
+        hint = "Name"
+        setSingleLine()
+        setText(baseline)
+        setSelectAllOnFocus(true)
+      }
+    layout.addView(edit)
     // Room row (only once a home map exists).
     var roomId = d.defaultRoomId ?: update?.roomId?.takeIf { old -> rooms.any { it.id == old } }
     var picked = false
@@ -499,11 +661,13 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
     val roomRow =
       TextView(activity).apply {
         textSize = 15f
-        setPadding(0, dp(10), 0, dp(4))
+        minHeight = dp(44)
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(0, dp(6), 0, dp(4))
         setTextColor(Color.rgb(0x1E, 0x88, 0xE5))
       }
     fun showRoom() {
-      roomRow.text = "Room: ${allRooms.firstOrNull { it.id == roomId }?.name ?: "none"} (tap to change)"
+      roomRow.text = "Room: " + (allRooms.firstOrNull { it.id == roomId }?.name ?: "none") + " (tap to change)"
     }
     if (d.hasMap) {
       showRoom()
@@ -520,370 +684,113 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       }
       layout.addView(roomRow)
     }
-    // v0.4 (S6): mobility class, a pre-capture signal for the policies compared offline.
-    layout.addView(
-      TextView(activity).apply {
-        textSize = 13f
-        setPadding(0, dp(8), 0, 0)
-        text = "How often does it move?"
-      }
-    )
-    val mobilityGroup = RadioGroup(activity).apply { orientation = RadioGroup.HORIZONTAL }
+    var mobilityGroup: RadioGroup? = null
     val mobilityOf = HashMap<Int, String>()
     val initialMobility = Mobility.orDefault(update?.mobility)
-    for ((value, label) in Mobility.CHOICES) {
-      val button =
-        RadioButton(activity).apply {
-          id = View.generateViewId()
-          text = label
+    if (studyMode) {
+      val detectorText =
+        if (d.rawLabel.isEmpty()) "no category" else "%s (%.2f)".format(d.rawLabel, d.rawConfidence)
+      layout.addView(
+        TextView(activity).apply {
+          textSize = 12f
+          setTextColor(GREY)
+          setPadding(0, dp(6), 0, 0)
+          text =
+            "Detector: $detectorText · crop: ${d.boxSource}\n" +
+              "%.2f m away · %s · map: %s".format(
+                d.captureDistance,
+                d.hitType,
+                if (d.mapPosition != null) "yes" else "NO (this session only)"
+              )
         }
-      mobilityOf[button.id] = value
-      mobilityGroup.addView(button)
-      if (value == initialMobility) mobilityGroup.check(button.id)
-    }
-    layout.addView(mobilityGroup)
-    val edit =
-      EditText(activity).apply {
-        hint = "Name (default: $defaultName)"
-        setSingleLine()
-        if (update != null) setText(update.name)
+      )
+      // v0.4 (S6): mobility class, a pre-capture signal for the policies compared offline.
+      layout.addView(
+        TextView(activity).apply {
+          textSize = 13f
+          setPadding(0, dp(8), 0, 0)
+          text = "How often does it move?"
+        }
+      )
+      val group = RadioGroup(activity).apply { orientation = RadioGroup.HORIZONTAL }
+      for ((value, label) in Mobility.CHOICES) {
+        val button =
+          RadioButton(activity).apply {
+            id = View.generateViewId()
+            text = label
+          }
+        mobilityOf[button.id] = value
+        group.addView(button)
+        if (value == initialMobility) group.check(button.id)
       }
-    layout.addView(edit)
+      layout.addView(group)
+      mobilityGroup = group
+    }
 
     AlertDialog.Builder(activity)
-      .setTitle(if (update != null) "Update location of " + update.name else "Remember this object?")
+      .setTitle(if (update != null) "New place for \"" + update.name + "\"" else "Remember this object?")
       .setView(ScrollView(activity).apply { addView(layout) }) // the name field stays reachable above the keyboard
       .setPositiveButton("Save") { _, _ ->
-        val typed = edit.text.toString().trim()
+        val saved = edit.text.toString().trim().ifEmpty { defaultName }
         onSave(
-          typed.ifEmpty { defaultName },
-          typed.isNotEmpty() && typed != update?.name,
+          saved,
+          saved != baseline,
           roomId,
           picked,
           newRoom?.takeIf { it.id == roomId },
-          mobilityOf[mobilityGroup.checkedRadioButtonId] ?: Mobility.DEFAULT,
+          mobilityGroup?.let { mobilityOf[it.checkedRadioButtonId] } ?: initialMobility,
         )
       }
       .setNegativeButton("Cancel") { _, _ -> onCancel() }
       .setOnCancelListener { onCancel() }
       .show()
+    layout.requestFocus()
   }
 
-  /**
-   * The Items list (v0.5): tapped records and scanned entries in one list, newest first, with a
-   * search over names and labels. A tapped record opens the same dialog as before (Find, Update
-   * location, Rename, Delete); a scanned entry opens [showEntry]. Rows are marked with their kind
-   * only when the inventory has entries, so without a scan the rows read as before.
-   */
-  fun showItems(
-    records: List<ObjectRecord>,
-    filesRoot: File,
-    state: Localizer.State?,
-    onFind: (ObjectRecord) -> Unit,
-    onUpdate: (ObjectRecord) -> Unit,
-    onRename: (ObjectRecord, String) -> Unit,
-    onDelete: (ObjectRecord) -> Unit,
-    entries: List<InventoryEntry> = emptyList(),
-    lastScanId: String? = null,
-    entryActions: EntryActions? = null,
-  ) {
-    if (records.isEmpty() && entries.isEmpty()) {
-      toast("No items yet. Tap an object in the camera view to remember it.")
-      return
-    }
-    val all = (records.map { ItemRow(it, null) } + entries.map { ItemRow(null, it) }).sortedByDescending { it.lastSeenMs }
-    val shown = ArrayList(all)
-    val markKinds = entries.isNotEmpty()
-    val thumbs = HashMap<String, Bitmap?>()
-    fun thumb(path: String): Bitmap? = thumbs.getOrPut(path) { loadThumb(File(filesRoot, path)) }
-    val adapter =
-      object : ArrayAdapter<ItemRow>(activity, 0, shown) {
-        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-          val item = getItem(position)!!
-          val row =
-            LinearLayout(context).apply {
-              orientation = LinearLayout.HORIZONTAL
-              gravity = Gravity.CENTER_VERTICAL
-              setPadding(dp(16), dp(8), dp(16), dp(8))
-            }
-          row.addView(
-            ImageView(context).apply {
-              layoutParams = LinearLayout.LayoutParams(dp(56), dp(56))
-              scaleType = ImageView.ScaleType.CENTER_CROP
-              setImageBitmap(thumb(item.record?.cropFile ?: item.entry!!.cropFile))
-            }
-          )
-          row.addView(
-            TextView(context).apply {
-              layoutParams =
-                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                  marginStart = dp(12)
-                }
-              val r = item.record
-              val e = item.entry
-              val sb = SpannableStringBuilder(r?.name ?: e!!.name)
-              sb.setSpan(StyleSpan(Typeface.BOLD), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-              if (markKinds) {
-                val start = sb.length
-                sb.append(if (r != null) "  tapped" else "  scanned")
-                sb.setSpan(ForegroundColorSpan(GREY), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                sb.setSpan(RelativeSizeSpan(0.8f), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-              }
-              if (r != null) {
-                val mapId = state?.map?.mapId
-                val where =
-                  when {
-                    r.mapId != null && r.mapId == mapId && r.mapPosition != null ->
-                      " · " + (state?.roomName(r.roomId) ?: "room not named")
-                    r.sessionId == activity.sessionId -> " · this session only"
-                    else -> " · photo only (saved before this map)"
-                  }
-                sb.append("\nlast seen ${ago(r.lastSeenMs)}$where")
-              } else {
-                sb.append("\n").append(entryLine(e!!, state, lastScanId))
-              }
-              text = sb
-              textSize = 15f
-            }
-          )
-          return row
-        }
-      }
-    val search =
-      EditText(activity).apply {
-        setSingleLine()
-        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        hint = "Search names and labels"
-        addTextChangedListener(
-          object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-
-            override fun afterTextChanged(s: Editable?) {
-              val q = s?.toString() ?: ""
-              val filtered =
-                all.filter { row ->
-                  row.record?.let { InventoryText.matches(it, q) } ?: InventoryText.matches(row.entry!!, q)
-                }
-              adapter.setNotifyOnChange(false)
-              adapter.clear()
-              adapter.addAll(filtered)
-              adapter.notifyDataSetChanged()
-            }
-          }
-        )
-      }
-    val titleBox =
-      LinearLayout(activity).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(24), dp(20), dp(24), 0)
-        addView(
-          TextView(activity).apply {
-            text = "Remembered items"
-            textSize = 20f
-            setTypeface(typeface, Typeface.BOLD)
-          }
-        )
-        addView(search)
-      }
-    AlertDialog.Builder(activity)
-      .setCustomTitle(titleBox)
-      .setAdapter(adapter) { _, i ->
-        val item = shown.getOrNull(i) ?: return@setAdapter
-        val e = item.entry
-        if (e != null) {
-          if (entryActions != null) showEntry(e, filesRoot, state, lastScanId, entryActions)
-          return@setAdapter
-        }
-        val r = item.record!!
-        // v0.4 (S7): a fourth action next to Find, Rename and Delete, as a button in the body.
-        var itemDialog: AlertDialog? = null
-        val updateRow =
-          LinearLayout(activity).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), 0, dp(20), 0)
-            addView(
-              Button(activity).apply {
-                text = "Update location"
-                setOnClickListener {
-                  itemDialog?.dismiss()
-                  onUpdate(r)
-                }
-              }
-            )
-            addView(
-              TextView(activity).apply {
-                textSize = 12f
-                text = "Found it somewhere else? Tap it there to replace the remembered location."
-              }
-            )
-          }
-        itemDialog =
-          AlertDialog.Builder(activity)
-            .setTitle(r.name)
-            .setMessage("Last seen ${ago(r.lastSeenMs)}. The location is historical until verified.")
-            .setView(updateRow)
-            .setPositiveButton("Find") { _, _ -> onFind(r) }
-            .setNeutralButton("Delete") { _, _ ->
-              AlertDialog.Builder(activity)
-                .setTitle("Delete \"${r.name}\"?")
-                .setMessage("This removes the item from the list. Its photo and study logs are kept for analysis.")
-                .setPositiveButton("Delete") { _, _ -> onDelete(r) }
-                .setNegativeButton("Cancel", null)
-                .show()
-            }
-            .setNegativeButton("Rename") { _, _ -> showRename(r, onRename) }
-            .show()
-      }
-      .setNegativeButton("Close", null)
-      .show()
-      // The search field is in the custom title, which the dialog does not count as text input:
-      // without this the soft keyboard would never open for it.
-      .window
-      ?.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
-  }
-
-  /**
-   * Second line of a scanned entry: location and evidence, "Bedroom · seen 2 d ago", "Kitchen ·
-   * looked for in the last scan, not seen" or "Office · not checked since Nov 17".
-   */
-  private fun entryLine(e: InventoryEntry, state: Localizer.State?, lastScanId: String?): String {
-    val inMap = state?.map?.mapId != null && e.mapId == state.map.mapId
-    return InventoryText.location(e, state?.roomName(e.roomId), inMap) + " · " +
-      InventoryText.evidence(e, System.currentTimeMillis(), lastScanId)
-  }
-
-  /** A scanned entry: Find, Rename or Delete. Back or a tap outside changes nothing. */
-  private fun showEntry(e: InventoryEntry, filesRoot: File, state: Localizer.State?, lastScanId: String?, actions: EntryActions) {
+  /** Section 6.7: the counts of a finished scan. [onItems] opens the Items panel. */
+  fun showScanSummary(end: ScanEnd, onItems: () -> Unit) {
+    val s = end.summary
     val box =
       LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(20), dp(8), dp(20), 0)
-        BitmapFactory.decodeFile(File(filesRoot, e.cropFile).path)?.let { bmp ->
-          addView(
-            ImageView(activity).apply {
-              setImageBitmap(bmp)
-              adjustViewBounds = true
-              maxHeight = dp(180)
-            }
-          )
+        setPadding(dp(24), dp(8), dp(24), 0)
+      }
+    fun line(text: String, size: Float, color: Int) =
+      box.addView(
+        TextView(activity).apply {
+          this.text = text
+          textSize = size
+          setTextColor(color)
+          setPadding(0, dp(3), 0, dp(3))
         }
-        addView(
-          TextView(activity).apply {
-            textSize = 14f
-            setPadding(0, dp(8), 0, 0)
-            text =
-              entryLine(e, state, lastScanId) + "\n" +
-                "Detected as " + e.label + " · " + e.sightingCount + " sightings · first seen " + InventoryText.day(e.firstSeenMs) +
-                (if (e.nameEdited) "" else "\nThe name is the detector's label until you rename it.") +
-                "\nThe location is historical until verified."
-          }
-        )
-      }
-    AlertDialog.Builder(activity)
-      .setTitle(e.name)
-      .setView(box)
-      .setPositiveButton("Find") { _, _ -> actions.onFind(e) }
-      .setNeutralButton("Delete") { _, _ ->
-        AlertDialog.Builder(activity)
-          .setTitle("Delete \"" + e.name + "\"?")
-          .setMessage("This removes the scanned item from the list. Its photo and logs are kept for analysis.")
-          .setPositiveButton("Delete") { _, _ -> actions.onDelete(e) }
-          .setNegativeButton("Cancel", null)
-          .show()
-      }
-      .setNegativeButton("Rename") { _, _ -> showRenameEntry(e, actions) }
-      .show()
-  }
-
-  private fun showRenameEntry(e: InventoryEntry, actions: EntryActions) {
-    val edit =
-      EditText(activity).apply {
-        setText(e.name)
-        setSingleLine()
-        selectAll()
-      }
-    val box = LinearLayout(activity).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(edit) }
-    AlertDialog.Builder(activity)
-      .setTitle("Rename")
-      .setView(box)
-      .setPositiveButton("Save") { _, _ ->
-        val n = edit.text.toString().trim()
-        if (n.isNotEmpty() && n != e.name) actions.onRename(e, n)
-      }
-      .setNegativeButton("Cancel", null)
-      .show()
-  }
-
-  /** v0.5: Scan when idle and located, Stop during a scan, else hidden. */
-  fun setScanControl(c: ScanControl) {
-    when (c) {
-      ScanControl.HIDDEN -> scanButton.visibility = View.GONE
-      ScanControl.START -> {
-        scanButton.text = "Scan"
-        scanButton.visibility = View.VISIBLE
-      }
-      ScanControl.STOP -> {
-        scanButton.text = "Stop"
-        scanButton.visibility = View.VISIBLE
-      }
-    }
-  }
-
-  /** v0.5: the counts of a finished scan. [onItems] opens the Items list. */
-  fun showScanSummary(end: ScanEnd, onItems: () -> Unit) {
-    val s = end.summary
-    val text = StringBuilder()
+      )
+    val dark = Color.rgb(0x21, 0x21, 0x21)
     if (s == null) {
-      text.append("The scan could not be summarised").append(end.error?.let { ": $it" } ?: "").append(".\n")
+      line("The scan could not be summarised" + (end.error?.let { ": $it" } ?: "") + ".", 16f, dark)
     } else {
-      text.append("New items: ").append(s.newCount).append('\n')
-      text.append("Seen again: ").append(s.seenAgain).append('\n')
-      text.append("Looked for, not seen: ").append(s.missed).append('\n')
-      text.append("Not observed: ").append(s.notObserved).append('\n')
-      text.append("Seen in one keyframe only (dropped): ").append(s.tentativeDropped).append('\n')
+      for (t in UiModel.scanSummaryLines(s.newCount, s.seenAgain, s.missed, s.tentativeDropped)) line(t, 16f, dark)
     }
-    text.append('\n')
-    text.append(end.keyframes).append(" keyframes · ").append("%.0f m walked · %.0f s".format(end.metersWalked, end.durationMs / 1000.0))
-    end.depthCheckMedianM?.let { text.append("\nDepth check: median %.1f cm over %d keyframes".format(it * 100, end.depthChecks)) }
-    if (end.reason == "paused") text.append("\n\nThe scan ended because the app left the screen.")
+    if (end.reason == "paused") line("The scan ended because the app left the screen.", 14f, dark)
+    line(UiModel.scanSummaryDetails(end.durationMs, end.metersWalked, end.keyframes, end.depthCheckMedianM), 12f, GREY)
     AlertDialog.Builder(activity)
       .setTitle("Scan finished")
-      .setMessage(text.toString())
-      .setPositiveButton("OK", null)
-      .setNeutralButton("Items") { _, _ -> onItems() }
-      .show()
-  }
-
-  private fun showRename(r: ObjectRecord, onRename: (ObjectRecord, String) -> Unit) {
-    val edit =
-      EditText(activity).apply {
-        setText(r.name)
-        setSingleLine()
-        selectAll()
-      }
-    val box = LinearLayout(activity).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(edit) }
-    AlertDialog.Builder(activity)
-      .setTitle("Rename")
       .setView(box)
-      .setPositiveButton("Save") { _, _ ->
-        val n = edit.text.toString().trim()
-        if (n.isNotEmpty() && n != r.name) onRename(r, n)
-      }
-      .setNegativeButton("Cancel", null)
+      .setPositiveButton("OK", null)
+      .setNeutralButton("See items") { _, _ -> onItems() }
       .show()
   }
 
-  private fun loadThumb(f: File): Bitmap? =
-    BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = 4 })
-
-  /** [onDismiss] runs once the result is closed, by OK, Back or a tap outside (v0.4 BENCHMARK). */
+  /**
+   * Both photos of a capture. [study]: the v0.5 modal with the similarity (shown after every
+   * capture in study mode; [onDismiss] runs once it is closed, for the BENCHMARK label). Everyday
+   * mode shows it from the guide card's status line, in plain words.
+   */
   fun showVerifyResult(
     stored: Bitmap?,
     fresh: Bitmap,
     similarity: Float,
     confirmed: Boolean,
+    study: Boolean = true,
     onDismiss: (() -> Unit)? = null,
   ) {
     val pad = dp(12)
@@ -905,14 +812,25 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       col.addView(TextView(activity).apply { text = caption })
       row.addView(col)
     }
-    val message =
-      if (confirmed) "Seen here now. Similarity %.2f ≥ %.2f.".format(similarity, VerificationPolicy.MATCH_THRESHOLD)
-      else
-        ("Not confirmed: insufficient evidence (similarity %.2f < %.2f). " +
-            "The item may still be here; showing the last-seen location.")
-          .format(similarity, VerificationPolicy.MATCH_THRESHOLD)
+    val title: String
+    val message: String
+    if (study) {
+      title = if (confirmed) "Verified" else "Not verified"
+      message =
+        if (confirmed) "Seen here now. Similarity %.2f ≥ %.2f.".format(similarity, VerificationPolicy.MATCH_THRESHOLD)
+        else
+          ("Not confirmed: insufficient evidence (similarity %.2f < %.2f). " +
+              "The item may still be here; showing the last-seen location.")
+            .format(similarity, VerificationPolicy.MATCH_THRESHOLD)
+    } else {
+      title = if (confirmed) "Still here" else "Could not confirm"
+      message =
+        if (confirmed) "The view at the ring matches the remembered photo."
+        else "The view at the ring does not match the remembered photo well enough. The item may still be here: " +
+          "the ring shows where it was last seen."
+    }
     AlertDialog.Builder(activity)
-      .setTitle(if (confirmed) "Verified" else "Not verified")
+      .setTitle(title)
       .setView(row)
       .setMessage(message)
       .setPositiveButton("OK", null)
@@ -921,8 +839,21 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
   }
 
   /**
-   * v0.4 (S4): the five ground-truth values of the study spec, section 2. Not cancelable, so the
-   * query always ends with exactly one answer ("Skip" is the way out).
+   * Section 6.3, everyday mode: "Did you find it?". [onAnswer] gets the answer; Back or "Keep
+   * looking" returns to the search with nothing logged.
+   */
+  fun askFoundIt(onAnswer: (FoundAnswer) -> Unit) {
+    val answers = FoundAnswer.values()
+    AlertDialog.Builder(activity)
+      .setTitle("Did you find it?")
+      .setItems(answers.map { it.label }.toTypedArray()) { _, i -> onAnswer(answers[i]) }
+      .setNegativeButton("Keep looking", null)
+      .show()
+  }
+
+  /**
+   * v0.4 (S4), study mode: the five ground-truth values of the study spec, section 2. Not
+   * cancelable, so the query always ends with exactly one answer ("Skip" is the way out).
    */
   fun askGroundTruth(name: String, onAnswer: (String) -> Unit) {
     AlertDialog.Builder(activity)

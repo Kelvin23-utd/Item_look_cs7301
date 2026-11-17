@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/coordinatorLayout"
+<!-- v0.6 (docs/PLAN_v0.6_ui.md, section 5): one screen state at a time. Top: status pill, menu,
+     study line, instruction line, message banner, mini-map. Bottom: one card for the screen (lock
+     bar, guide card, scan bar or welcome card) above one bar of at most two buttons. Messages
+     appear at the top, so they never move the buttons. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootLayout"
     android:keepScreenOn="true"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
@@ -11,13 +14,14 @@
       android:layout_width="match_parent"
       android:layout_height="match_parent" />
 
-  <!-- "Use a spot": the spot's saved camera view at about 45% opacity. Placed with a matrix from the
+  <!-- Locate: the spot's saved camera view at about 45% opacity. Placed with a matrix from the
        same view-to-image mapping as the camera background. Not clickable: touches pass through. -->
   <ImageView
       android:id="@+id/ghostImage"
       android:layout_width="match_parent"
       android:layout_height="match_parent"
       android:alpha="0.45"
+      android:importantForAccessibility="no"
       android:scaleType="matrix"
       android:visibility="gone" />
 
@@ -33,8 +37,7 @@
       android:layout_width="match_parent"
       android:layout_height="match_parent" />
 
-  <!-- Top: status panel (tap or long-press: location sheet) and the mini-map below it, at the right.
-       The container itself is not clickable, so touches beside the mini-map reach the camera view. -->
+  <!-- Top. The container itself is not clickable, so touches beside the mini-map reach the camera. -->
   <LinearLayout
       android:layout_width="match_parent"
       android:layout_height="wrap_content"
@@ -42,223 +45,436 @@
       android:layout_marginTop="36dp"
       android:orientation="vertical">
 
-  <!-- Status: tracking, map location, item count, room chip, and a one-line hint. -->
-  <LinearLayout
-      android:id="@+id/statusPanel"
-      android:layout_width="match_parent"
-      android:layout_height="wrap_content"
-      android:layout_marginHorizontal="12dp"
-      android:background="@drawable/panel_bg"
-      android:orientation="vertical"
-      android:paddingHorizontal="14dp"
-      android:paddingVertical="10dp">
-
-    <TextView
-        android:id="@+id/statusText"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textColor="#FFFFFF"
-        android:textSize="13sp"
-        android:text="Starting…" />
+        android:layout_marginHorizontal="12dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
 
+      <!-- Status pill: room or location state. Tap: room picker (with a map), else the menu. -->
+      <TextView
+          android:id="@+id/statusPill"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:background="@drawable/pill_bg"
+          android:gravity="center_vertical"
+          android:minHeight="44dp"
+          android:paddingHorizontal="16dp"
+          android:paddingVertical="8dp"
+          android:text="● Starting…"
+          android:textColor="#FFFFFF"
+          android:textSize="16sp" />
+
+      <View
+          android:layout_width="0dp"
+          android:layout_height="1dp"
+          android:layout_weight="1" />
+
+      <!-- Menu (⋮): the Home sheet. -->
+      <TextView
+          android:id="@+id/menuButton"
+          android:layout_width="48dp"
+          android:layout_height="48dp"
+          android:background="@drawable/menu_bg"
+          android:clickable="true"
+          android:contentDescription="Menu"
+          android:focusable="true"
+          android:gravity="center"
+          android:text="⋮"
+          android:textColor="#FFFFFF"
+          android:textSize="26sp"
+          android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- Study mode only: tag and capture mode. -->
     <TextView
-        android:id="@+id/hintText"
+        android:id="@+id/studyLine"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginTop="4dp"
+        android:shadowColor="#000000"
+        android:shadowRadius="3"
+        android:textColor="#FFC107"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
+    <!-- The one instruction line. Clickable so a tap on it does not register an object. -->
+    <TextView
+        android:id="@+id/instructionText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="12dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/panel_bg"
+        android:clickable="true"
+        android:focusable="false"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="10dp"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp"
+        android:visibility="gone" />
+
+    <!-- Message banner (replaces the Snackbar): 3 s, or 5 s for long texts; a tap dismisses it. -->
+    <TextView
+        android:id="@+id/messageBanner"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="12dp"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/banner_bg"
+        android:clickable="true"
+        android:focusable="false"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="10dp"
+        android:textColor="#212121"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
+    <edu.cs6301.findback.MiniMapView
+        android:id="@+id/miniMap"
+        android:layout_width="120dp"
+        android:layout_height="120dp"
+        android:layout_gravity="end"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="12dp"
+        android:visibility="gone" />
+  </LinearLayout>
+
+  <!-- Bottom: one card for the screen, then the button bar. -->
+  <LinearLayout
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_gravity="bottom"
+      android:layout_marginHorizontal="12dp"
+      android:layout_marginBottom="28dp"
+      android:orientation="vertical">
+
+    <!-- Spot lock bar (LOCKING): what to do; Cancel and Lock are in the button bar. -->
+    <LinearLayout
+        android:id="@+id/lockBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/panel_bg"
+        android:clickable="true"
+        android:focusable="false"
+        android:orientation="vertical"
+        android:padding="14dp"
+        android:visibility="gone">
+
+      <TextView
+          android:id="@+id/lockTitle"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:textColor="#FFFFFF"
+          android:textSize="17sp"
+          android:textStyle="bold" />
+
+      <TextView
+          android:id="@+id/lockText"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="4dp"
+          android:textColor="#E6FFFFFF"
+          android:textSize="15sp" />
+    </LinearLayout>
+
+    <!-- Guide card (FINDING, UPDATING, MEASURING). -->
+    <LinearLayout
+        android:id="@+id/guideCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/panel_bg"
+        android:clickable="true"
+        android:focusable="false"
+        android:orientation="vertical"
+        android:padding="12dp"
+        android:visibility="gone">
+
+      <LinearLayout
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:orientation="horizontal">
+
+        <ImageView
+            android:id="@+id/guideThumb"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:importantForAccessibility="no"
+            android:scaleType="centerCrop" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+          <TextView
+              android:id="@+id/guideTitle"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:textColor="#FFFFFF"
+              android:textSize="18sp"
+              android:textStyle="bold" />
+
+          <TextView
+              android:id="@+id/guideSubtitle"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:textColor="#B3FFFFFF"
+              android:textSize="13sp" />
+
+          <TextView
+              android:id="@+id/guideCue"
+              android:layout_width="match_parent"
+              android:layout_height="wrap_content"
+              android:layout_marginTop="4dp"
+              android:textColor="#FFFFFF"
+              android:textSize="17sp" />
+        </LinearLayout>
+      </LinearLayout>
+
+      <!-- One status line; in everyday mode a tap on a capture result shows both photos. -->
+      <TextView
+          android:id="@+id/guideStatus"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="8dp"
+          android:minHeight="24dp"
+          android:textColor="#FFFFFF"
+          android:textSize="14sp" />
+
+      <!-- Not located: Locate inside the card. -->
+      <Button
+          android:id="@+id/guideLocate"
+          android:layout_width="wrap_content"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="8dp"
+          android:background="@drawable/btn_secondary"
+          android:minHeight="44dp"
+          android:minWidth="120dp"
+          android:paddingHorizontal="20dp"
+          android:stateListAnimator="@null"
+          android:text="Locate"
+          android:textAllCaps="false"
+          android:textColor="#FFFFFF"
+          android:textSize="15sp"
+          android:visibility="gone" />
+
+      <!-- Study mode only: the policy line with its reasons. -->
+      <TextView
+          android:id="@+id/guidePolicy"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="6dp"
+          android:textSize="12sp"
+          android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Scan bar (SCANNING). -->
+    <LinearLayout
+        android:id="@+id/scanBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/panel_bg"
+        android:clickable="true"
+        android:focusable="false"
+        android:orientation="vertical"
+        android:padding="14dp"
+        android:visibility="gone">
+
+      <TextView
+          android:id="@+id/scanTitle"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:textColor="#FFFFFF"
+          android:textSize="17sp"
+          android:textStyle="bold" />
+
+      <TextView
+          android:id="@+id/scanHint"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="4dp"
+          android:textColor="#E6FFFFFF"
+          android:textSize="15sp" />
+    </LinearLayout>
+
+    <!-- Welcome card (NO_MAP). -->
+    <LinearLayout
+        android:id="@+id/welcomeCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/panel_bg"
+        android:clickable="true"
+        android:focusable="false"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
+
+      <TextView
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:text="Set up your home"
+          android:textColor="#FFFFFF"
+          android:textSize="18sp"
+          android:textStyle="bold" />
+
+      <TextView
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="6dp"
+          android:lineSpacingExtra="3dp"
+          android:text="1. Stand where you can return exactly, for example with the phone against a door frame.\n2. Press Set home here, hold still, press Lock.\n3. Walk around and press Scan."
+          android:textColor="#E6FFFFFF"
+          android:textSize="15sp" />
+
+      <TextView
+          android:id="@+id/welcomePicture"
+          android:layout_width="match_parent"
+          android:layout_height="wrap_content"
+          android:layout_marginTop="6dp"
+          android:text="Or show the reference picture to the camera."
+          android:textColor="#B3FFFFFF"
+          android:textSize="14sp"
+          android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Button bar: secondary (left, outlined) and primary (right, filled). Clickable, so a tap
+         between the buttons does not register an object. -->
+    <LinearLayout
+        android:id="@+id/buttonBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:clickable="true"
+        android:focusable="false"
+        android:orientation="horizontal">
+
+      <Button
+          android:id="@+id/secondaryButton"
+          android:layout_width="0dp"
+          android:layout_height="wrap_content"
+          android:layout_weight="1"
+          android:background="@drawable/btn_secondary"
+          android:minHeight="52dp"
+          android:stateListAnimator="@null"
+          android:textAllCaps="false"
+          android:textColor="#FFFFFF"
+          android:textSize="17sp"
+          android:visibility="gone" />
+
+      <View
+          android:id="@+id/buttonGap"
+          android:layout_width="12dp"
+          android:layout_height="1dp"
+          android:visibility="gone" />
+
+      <Button
+          android:id="@+id/primaryButton"
+          android:layout_width="0dp"
+          android:layout_height="wrap_content"
+          android:layout_weight="1"
+          android:background="@drawable/btn_primary"
+          android:minHeight="52dp"
+          android:stateListAnimator="@null"
+          android:textAllCaps="false"
+          android:textColor="#FFFFFF"
+          android:textSize="17sp"
+          android:textStyle="bold"
+          android:visibility="gone" />
+    </LinearLayout>
+  </LinearLayout>
+
+  <!-- Items (section 6.5): a full-screen panel in the activity window, so the search field gets
+       the keyboard without window flags. Opaque and clickable: nothing reaches the camera. -->
+  <LinearLayout
+      android:id="@+id/itemsPanel"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"
+      android:background="#FFFFFF"
+      android:clickable="true"
+      android:focusable="false"
+      android:orientation="vertical"
+      android:paddingTop="36dp"
+      android:paddingBottom="16dp"
+      android:visibility="gone">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="20dp"
+        android:paddingEnd="4dp">
+
+      <TextView
+          android:layout_width="0dp"
+          android:layout_height="wrap_content"
+          android:layout_weight="1"
+          android:text="Items"
+          android:textColor="#212121"
+          android:textSize="22sp"
+          android:textStyle="bold" />
+
+      <TextView
+          android:id="@+id/itemsClose"
+          android:layout_width="48dp"
+          android:layout_height="48dp"
+          android:background="?android:attr/selectableItemBackgroundBorderless"
+          android:contentDescription="Close"
+          android:gravity="center"
+          android:text="✕"
+          android:textColor="#424242"
+          android:textSize="22sp" />
+    </LinearLayout>
+
+    <EditText
+        android:id="@+id/itemsSearch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="16dp"
+        android:hint="Search names, labels and rooms"
+        android:imeOptions="actionSearch"
+        android:importantForAutofill="no"
+        android:inputType="text|textNoSuggestions"
+        android:minHeight="48dp"
+        android:singleLine="true"
+        android:textSize="16sp" />
+
+    <HorizontalScrollView
+        android:id="@+id/itemsChipsScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
-        android:textColor="#CCFFFFFF"
-        android:textSize="13sp" />
-
-    <!-- Room chip: the current room; tap to pick another, "New room…" or "No room". -->
-    <TextView
-        android:id="@+id/roomChip"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:background="@drawable/chip_bg"
-        android:paddingHorizontal="12dp"
-        android:paddingVertical="5dp"
-        android:textColor="#FFFFFF"
-        android:textSize="13sp"
-        android:visibility="gone" />
-  </LinearLayout>
-
-  <edu.cs6301.findback.MiniMapView
-      android:id="@+id/miniMap"
-      android:layout_width="120dp"
-      android:layout_height="120dp"
-      android:layout_gravity="end"
-      android:layout_marginTop="8dp"
-      android:layout_marginEnd="12dp"
-      android:visibility="gone" />
-  </LinearLayout>
-
-  <!-- Spot lock bar: instructions plus Cancel and Lock. Clickable so taps do not reach the camera. -->
-  <LinearLayout
-      android:id="@+id/lockBar"
-      android:layout_width="match_parent"
-      android:layout_height="wrap_content"
-      android:layout_gravity="bottom"
-      android:layout_marginBottom="92dp"
-      android:layout_marginHorizontal="12dp"
-      android:background="@drawable/panel_bg"
-      android:clickable="true"
-      android:focusable="true"
-      android:orientation="vertical"
-      android:padding="12dp"
-      android:visibility="gone"
-      app:layout_dodgeInsetEdges="bottom">
-
-    <TextView
-        android:id="@+id/lockText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textColor="#FFFFFF"
-        android:textSize="14sp" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:orientation="horizontal">
-
-      <Button
-          android:id="@+id/lockCancel"
-          android:layout_width="0dp"
-          android:layout_height="wrap_content"
-          android:layout_weight="1"
-          android:layout_marginEnd="4dp"
-          android:text="Cancel" />
-
-      <Button
-          android:id="@+id/lockButton"
-          android:layout_width="0dp"
-          android:layout_height="wrap_content"
-          android:layout_weight="1"
-          android:layout_marginStart="4dp"
-          android:text="Lock" />
-    </LinearLayout>
-  </LinearLayout>
-
-  <!-- Guidance card for the selected target. -->
-  <LinearLayout
-      android:id="@+id/guideCard"
-      android:layout_width="match_parent"
-      android:layout_height="wrap_content"
-      android:layout_gravity="bottom"
-      android:layout_marginBottom="92dp"
-      android:layout_marginHorizontal="12dp"
-      android:background="@drawable/panel_bg"
-      android:clickable="true"
-      android:focusable="true"
-      android:orientation="vertical"
-      android:padding="12dp"
-      android:visibility="gone"
-      app:layout_dodgeInsetEdges="bottom">
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal">
-
-      <ImageView
-          android:id="@+id/guideThumb"
-          android:layout_width="72dp"
-          android:layout_height="72dp"
-          android:scaleType="centerCrop" />
+        android:scrollbars="none"
+        android:visibility="gone">
 
       <LinearLayout
-          android:layout_width="0dp"
+          android:id="@+id/itemsChips"
+          android:layout_width="wrap_content"
           android:layout_height="wrap_content"
-          android:layout_weight="1"
-          android:layout_marginStart="12dp"
-          android:orientation="vertical">
-
-        <TextView
-            android:id="@+id/guideTitle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#FFFFFF"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/guideSubtitle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#B3FFFFFF"
-            android:textSize="12sp" />
-
-        <TextView
-            android:id="@+id/guideCue"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:textColor="#FFFFFF"
-            android:textSize="16sp" />
-      </LinearLayout>
-    </LinearLayout>
+          android:orientation="horizontal"
+          android:paddingHorizontal="12dp" />
+    </HorizontalScrollView>
 
     <TextView
-        android:id="@+id/guidePolicy"
+        android:id="@+id/itemsEmpty"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:textSize="12sp" />
-
-    <TextView
-        android:id="@+id/guideVerify"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="2dp"
-        android:textSize="13sp" />
-  </LinearLayout>
-
-  <LinearLayout
-      android:layout_width="match_parent"
-      android:layout_height="wrap_content"
-      android:layout_gravity="bottom"
-      android:layout_marginBottom="28dp"
-      android:layout_marginHorizontal="8dp"
-      android:gravity="center"
-      android:orientation="horizontal"
-      app:layout_dodgeInsetEdges="bottom">
-
-    <Button
-        android:id="@+id/itemsButton"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:layout_marginHorizontal="4dp"
-        android:text="Items" />
-
-    <Button
-        android:id="@+id/verifyButton"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:layout_marginHorizontal="4dp"
-        android:enabled="false"
-        android:text="Verify" />
-
-    <Button
-        android:id="@+id/doneButton"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:layout_marginHorizontal="4dp"
-        android:enabled="false"
-        android:text="Done" />
-
-    <!-- v0.5: Scan (when idle and located) or Stop (during a scan); hidden otherwise. -->
-    <Button
-        android:id="@+id/scanButton"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:layout_marginHorizontal="4dp"
-        android:text="Scan"
+        android:padding="24dp"
+        android:textColor="#757575"
+        android:textSize="16sp"
         android:visibility="gone" />
+
+    <ListView
+        android:id="@+id/itemsList"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="4dp" />
   </LinearLayout>
 
-</androidx.coordinatorlayout.widget.CoordinatorLayout>
+</FrameLayout>

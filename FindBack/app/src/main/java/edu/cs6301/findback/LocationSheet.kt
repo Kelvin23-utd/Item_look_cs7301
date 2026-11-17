@@ -2,8 +2,10 @@ package edu.cs6301.findback
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.text.InputFilter
 import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.widget.CheckBox
 import android.widget.EditText
@@ -20,11 +22,12 @@ import edu.cs6301.findback.map.Room
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.StudySettings
 import java.io.File
+import java.util.Locale
 
 /**
- * Location dialogs (UI thread): the location sheet opened from the status panel, the room picker,
- * and the prompts the localizer raises. Every prompt delivers exactly one answer, also when the
- * dialog is dismissed with Back (as "no"), so the localizer never waits forever.
+ * Location dialogs (UI thread): the Home sheet opened from the menu button (v0.6), Locate, the room
+ * picker, and the prompts the localizer raises. Every prompt delivers exactly one answer, also when
+ * the dialog is dismissed with Back (as "no"), so the localizer never waits forever.
  */
 class LocationDialogs(
   private val activity: MainActivity,
@@ -33,64 +36,122 @@ class LocationDialogs(
 ) {
   private fun dp(v: Int) = (v * activity.resources.displayMetrics.density).toInt()
 
-  // ------------------------------------------------------------------ location sheet
+  // ------------------------------------------------------------------ Home sheet
 
+  /** Section 6.4: status, details and the entries that work now. */
   fun showSheet(st: Localizer.State?) {
     val map = st?.map
-    val status = StringBuilder()
-    when {
-      map == null -> status.append("No home map yet.\nShow the picture to the camera, or add a spot, to set home.")
-      else -> {
-        status.append(
-          "Map ${map.mapId} · ${map.fixPoints.size} fix point(s) · ${map.rooms.size} room(s) · ${map.nodes.size} trail points\n"
-        )
-        status.append(
-          if (st?.located == true) "Located via %s · %.0f m walked since the fix".format(st.fixName, st.metersSinceFix ?: 0.0)
-          else "Not located: look at the picture, or use a spot."
-        )
+    val spots = spotsOf(st)
+    val located = st?.located == true
+    val fixName = st?.fixName ?: ""
+    val status =
+      when {
+        map == null -> "No home yet"
+        located && st?.fixType == FixType.SPOT -> "Located at the spot \"$fixName\""
+        located -> "Located at \"$fixName\""
+        else -> "Not located"
       }
+    val details = StringBuilder()
+    if (map == null) {
+      details.append("Press Set home here, or show the reference picture to the camera.")
+    } else {
+      val pictures = map.fixPoints.count { it.type == FixType.IMAGE }
+      details.append("Map ").append(map.mapId)
+      details.append(" · ").append(plural(map.rooms.size, "room", "rooms"))
+      details.append(" · ").append(plural(spots.size, "spot", "spots"))
+      if (pictures > 0) details.append(" · ").append(plural(pictures, "picture", "pictures"))
+      details.append(" · ").append(map.nodes.size).append(" trail points")
+      if (located) details.append(" · %.0f m walked since locating".format(Locale.US, st?.metersSinceFix ?: 0.0))
     }
-    st?.imageFixNote?.let { status.append("\n\n").append(it) }
-    StudySettings.statusLine(activity.studyTag, activity.captureMode)?.let { status.append("\n\n").append(it) }
+    st?.imageFixNote?.let { details.append("\n\n").append(it) }
+    StudySettings.statusLine(activity.studyTag, activity.captureMode)?.let { details.append("\n\n").append(it) }
 
-    val spots = map?.fixPoints?.filter { it.type == FixType.SPOT } ?: emptyList()
     val entries = ArrayList<Pair<String, () -> Unit>>()
-    entries += "Picture width (%.1f cm)".format(activity.refWidthM * 100) to { main.showReferenceSettings() }
-    entries +=
-      if (map == null) "Set home here with a spot" to { startAddSpot(home = true) }
-      else "Add a spot here" to {
-        if (st?.located == true) startAddSpot(home = false)
-        else main.toast("Locate first (look at the picture or use a spot), then add a spot.")
-      }
-    entries += "Use a spot" to {
-      if (spots.isEmpty()) main.toast("No spots saved yet. Use \"Add a spot here\" first.") else chooseSpot(spots)
-    }
-    if (map != null && map.rooms.isNotEmpty()) entries += "Rename a room" to { chooseRoomToRename(map.rooms) }
+    if (spots.isNotEmpty()) entries += "Locate" to { locate(st) }
+    if (map == null) entries += "Set home here" to { startAddSpot(home = true) }
+    else if (located) entries += "Add a spot here" to { startAddSpot(home = false) }
+    if (map != null && map.rooms.isNotEmpty()) entries += "Rooms…" to { chooseRoomToRename(map.rooms) }
+    entries += "Settings…" to { showSettings() }
     entries += "Study settings…" to { showStudySettings() }
-    if (map != null) entries += "New map…" to { confirmNewMap(map.mapId, activity.store.snapshot().size) }
+    if (map != null) entries += "Start a new map…" to { confirmNewMap(map.mapId, activity.store.snapshot().size) }
 
-    val header =
-      TextView(activity).apply {
-        text = status
-        textSize = 14f
-        setPadding(dp(24), dp(20), dp(24), dp(8))
-      }
     val box =
       LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
-        addView(TextView(activity).apply {
-          text = "Home map"
-          textSize = 20f
-          setTypeface(typeface, android.graphics.Typeface.BOLD)
-          setPadding(dp(24), dp(20), dp(24), 0)
-        })
-        addView(header)
+        setPadding(dp(24), dp(20), dp(24), dp(8))
+        addView(
+          TextView(activity).apply {
+            text = "Home"
+            textSize = 20f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+          }
+        )
+        addView(
+          TextView(activity).apply {
+            text = status
+            textSize = 16f
+            setPadding(0, dp(8), 0, 0)
+          }
+        )
+        addView(
+          TextView(activity).apply {
+            text = details
+            textSize = 12f
+            setTextColor(MainView.GREY)
+            setPadding(0, dp(4), 0, 0)
+          }
+        )
       }
     AlertDialog.Builder(activity)
       .setCustomTitle(box)
       .setItems(entries.map { it.first }.toTypedArray()) { _, i -> entries[i].second() }
       .setNegativeButton("Close", null)
       .show()
+  }
+
+  private fun plural(n: Int, one: String, many: String) = if (n == 1) "1 $one" else "$n $many"
+
+  /** The map's spots, the home spot (the oldest) first. */
+  private fun spotsOf(st: Localizer.State?): List<FixPoint> =
+    st?.map?.fixPoints?.filter { it.type == FixType.SPOT }?.sortedBy { it.createdMs } ?: emptyList()
+
+  /** Section 6.4, Settings: picture width, and "Save scan frames" (moved from Study settings). */
+  private fun showSettings() {
+    var dialog: AlertDialog? = null
+    val saveFrames =
+      CheckBox(activity).apply {
+        text = "Save scan frames (image, depth and detections of every scan keyframe)"
+        isChecked = activity.scanSaveFrames
+      }
+    val box =
+      LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(20), dp(8), dp(20), 0)
+        addView(
+          TextView(activity).apply {
+            text = "Picture width: %.1f cm (tap to change)".format(Locale.US, activity.refWidthM * 100)
+            textSize = 15f
+            minHeight = dp(48)
+            gravity = Gravity.CENTER_VERTICAL
+            setTextColor(Color.rgb(0x1E, 0x88, 0xE5))
+            setOnClickListener {
+              dialog?.dismiss()
+              main.showReferenceSettings()
+            }
+          }
+        )
+        addView(saveFrames)
+      }
+    dialog =
+      AlertDialog.Builder(activity)
+        .setTitle("Settings")
+        .setView(box)
+        .setPositiveButton("Save") { _, _ ->
+          // v0.5 (plan section 8): read when a scan starts; logged as `scan_start.saveFrames`.
+          if (saveFrames.isChecked != activity.scanSaveFrames) activity.setScanSaveFrames(saveFrames.isChecked)
+        }
+        .setNegativeButton("Cancel", null)
+        .show()
   }
 
   /**
@@ -130,12 +191,6 @@ class LocationDialogs(
       modeGroup.addView(button)
       if (mode == activity.captureMode) modeGroup.check(button.id)
     }
-    // v0.5 (plan section 8): read when a scan starts; logged as `scan_start.saveFrames`.
-    val saveFrames =
-      CheckBox(activity).apply {
-        text = "Save scan frames (image, depth and detections of every scan keyframe)"
-        isChecked = activity.scanSaveFrames
-      }
     val box =
       LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
@@ -159,54 +214,80 @@ class LocationDialogs(
         addView(modeGroup)
         addView(
           TextView(activity).apply {
-            textSize = 13f
+            textSize = 12f
             setPadding(0, dp(12), 0, 0)
-            text = "Scan mode"
+            text = "With a tag or a mode other than FREE, the app asks the study questions (ground truth, mobility)."
           }
         )
-        addView(saveFrames)
       }
     AlertDialog.Builder(activity)
       .setTitle("Study settings")
       .setView(box)
       .setPositiveButton("Save") { _, _ ->
-        if (saveFrames.isChecked != activity.scanSaveFrames) activity.setScanSaveFrames(saveFrames.isChecked)
         if (renderer.query != null) {
           main.toast("A search started meanwhile: study settings not changed.")
         } else {
           val mode = modeOf[modeGroup.checkedRadioButtonId] ?: activity.captureMode
           activity.setStudySettings(tagEdit.text.toString(), mode)
           main.toast(StudySettings.statusLine(activity.studyTag, activity.captureMode) ?: "Study: FREE, no tag")
+          main.refresh()
         }
       }
       .setNegativeButton("Cancel", null)
       .show()
   }
 
-  private fun startAddSpot(home: Boolean) {
-    val text =
-      (if (home) "This spot becomes home. " else "") +
-        "Hold the phone in a pose you can repeat later, for example pressed against a door frame or the edge " +
-        "of a shelf. Upright or on its side both work. Then press Lock and hold still for a moment."
-    main.enterLockMode(text, null, onLock = { renderer.requestAddSpot() }, onCancel = { renderer.requestCancelLock() })
+  // ------------------------------------------------------------------ Locate and spots
+
+  /**
+   * Section 6.1: one spot → its lock bar with the ghost at once; several → "Locate at which spot?",
+   * the home spot first; none → the banner says so.
+   */
+  fun locate(st: Localizer.State?) {
+    val spots = spotsOf(st)
+    when {
+      spots.isEmpty() ->
+        main.toast(
+          if (st?.map == null) "No home yet: press Set home here first."
+          else "No spots saved yet. Once located, add one in the menu (⋮): Add a spot here."
+        )
+      spots.size == 1 -> useSpot(spots[0])
+      else ->
+        AlertDialog.Builder(activity)
+          .setTitle("Locate at which spot?")
+          .setItems(spots.map { it.name }.toTypedArray()) { _, i -> useSpot(spots[i]) }
+          .setNegativeButton("Cancel", null)
+          .show()
+    }
   }
 
-  private fun chooseSpot(spots: List<FixPoint>) {
-    if (spots.size == 1) return useSpot(spots[0])
-    AlertDialog.Builder(activity)
-      .setTitle("Use which spot?")
-      .setItems(spots.map { it.name }.toTypedArray()) { _, i -> useSpot(spots[i]) }
-      .setNegativeButton("Cancel", null)
-      .show()
+  /** Set home here (no map) or Add a spot here (located): the lock bar without a ghost. */
+  fun startAddSpot(home: Boolean) {
+    val text =
+      (if (home) "This spot becomes home. " else "") +
+        "Hold the phone in a pose you can repeat later, for example against a door frame or the edge of a " +
+        "shelf (upright or on its side). Then press Lock and hold still for a moment."
+    main.enterLockMode(
+      if (home) "Set home here" else "Add a spot here",
+      text,
+      null,
+      onLock = { renderer.requestAddSpot() },
+      onCancel = { renderer.requestCancelLock() },
+    )
   }
 
   private fun useSpot(spot: FixPoint) {
     val ghost = spot.ghostFile?.let { BitmapFactory.decodeFile(File(activity.store.root, it).path) }
     val text =
-      if (ghost != null) "Move the phone until the live view lines up with the faint picture of \"${spot.name}\", " +
-        "hold it still, then press Lock."
-      else "No ghost image for \"${spot.name}\". Hold the phone in the saved pose and still, then press Lock."
-    main.enterLockMode(text, ghost, onLock = { renderer.requestUseSpot(spot.id) }, onCancel = { renderer.requestCancelLock() })
+      if (ghost != null) "Line up the camera with the faint picture, hold still, then press Lock."
+      else "No saved picture for this spot. Hold the phone in the saved pose and still, then press Lock."
+    main.enterLockMode(
+      "Locate at \"" + spot.name + "\"",
+      text,
+      ghost,
+      onLock = { renderer.requestUseSpot(spot.id) },
+      onCancel = { renderer.requestCancelLock() },
+    )
   }
 
   private fun chooseRoomToRename(rooms: List<Room>) {
@@ -296,7 +377,7 @@ class LocationDialogs(
   fun askSetHome(onAnswer: (Boolean) -> Unit) =
     yesNo(
       "Set home here?",
-      "The picture becomes the home fix point of a new map. Items you save are stored relative to it, " +
+      "The picture becomes the home of a new map. Items you save are stored relative to it, " +
         "so keep the picture in this place.",
       "Set home",
       "Not now",
@@ -305,18 +386,18 @@ class LocationDialogs(
 
   fun askUseNewFix(jumpM: Double, jumpDeg: Double, fixName: String, onAnswer: (Boolean) -> Unit) =
     yesNo(
-      "Position jumped %.1f m. Use the new fix?".format(jumpM),
+      "Position jumped %.1f m. Use the new location?".format(jumpM),
       "\"%s\" disagrees with the current map position by %.1f m and %.0f°. ".format(fixName, jumpM, jumpDeg) +
-        "If the picture was moved, keep the current fix.",
-      "Use new fix",
+        "If the picture was moved, keep the current one.",
+      "Use new",
       "Keep current",
       onAnswer,
     )
 
   fun askAddPicture(onAnswer: (Boolean) -> Unit) =
     yesNo(
-      "Save the picture as a fix point?",
-      "You are located. Saving the picture here lets later sessions locate from it too. Keep it in this place.",
+      "Locate with the picture too?",
+      "You are located. Saving the picture here lets later sessions locate from it as well. Keep it in this place.",
       "Save",
       "No",
       onAnswer,
@@ -347,7 +428,7 @@ class LocationDialogs(
             textSize = 13f
             text =
               (if (isHome) "This spot becomes home. " else "") +
-                "Later, \"Use a spot\" shows this view faintly over the camera so you can line it up again."
+                "Later, Locate shows this view faintly over the camera so you can line it up again."
           }
         )
         addView(edit)

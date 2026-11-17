@@ -4,9 +4,9 @@ For the people running the experiments on the Pixel 8. What each experiment prov
 
 ## Before you start
 
-- **Study settings.** Tap the top status panel → "Study settings…". Type the tag exactly as written below and pick the capture mode. Both are saved in every log line, and the analysis ignores sessions with no tag.
+- **Study settings.** Tap the menu button (⋮, top right) → "Study settings…". Type the tag exactly as written below and pick the capture mode. Both are saved in every log line, and the analysis ignores sessions with no tag. The study questions below (ground truth at Done, "How often does it move?") appear only while a tag is set.
 - **Move the phone a little before tapping an item.** A still phone reads depth wrongly ("Depth looks wrong").
-- **Locate at the start of every session.** Hold the phone at the home spot → status panel → "Use a spot" → line up the faint picture → Lock.
+- **Locate at the start of every session.** Hold the phone at the home spot → "Locate" (bottom right) → line up the faint picture → Lock.
 - **After each day,** plug the phone into the Mac and tell Claude. Claude pulls the data, checks it and reports problems while you can still redo them.
 
 ## Schedule
@@ -25,7 +25,7 @@ For the people running the experiments on the Pixel 8. What each experiment prov
 
 Tag `home=A;exp=E0;split=dev`, mode FREE.
 
-1. Walk into a second room. Tap the "Room" chip → "New room…" and name it. Save one or two items there.
+1. Walk into a second room. Tap the room name at the top left → "New room…" and name it. Save one or two items there.
 2. Swipe the app away and reopen it. Go to the home spot and locate.
 3. For each of your items: Items → the item → Find. Follow the arrow until the ring appears. Done → "At the marker" → tap the item's true centre.
 
@@ -33,7 +33,7 @@ Check: the card names the right room, the arrow follows your walked path, and ea
 
 ## Set up the study map (Tuesday)
 
-1. Status panel → "New map…". This archives the pilot items; nothing is deleted.
+1. Menu (⋮) → "Start a new map…". This archives the pilot items; nothing is deleted.
 2. Set home with a spot. Name each room as you enter it and walk through all rooms once.
 3. Save 20 items, 6–8 per room. Choose things you can pick up and put back in exactly the same place. Include at least five pairs that look alike (two mugs, two remotes, two chargers, two books, two bottles).
 4. In the save dialog, answer "How often does it move?" honestly and check the room.
@@ -49,7 +49,7 @@ Then repeat three times, with tag `home=A;exp=E1;split=dev` for the first restar
 1. Swipe the app away, reopen it, go to the home spot and locate.
 2. For every item: Items → Find → walk to the ring → Done → "At the marker" → tap the true centre.
 
-Then, standing at the home spot: "Use a spot" → Lock, ten times. Take the phone away and bring it back between locks. This measures how repeatable a lock is.
+Then, standing at the home spot: menu (⋮) → "Locate" → Lock, ten times. Take the phone away and bring it back between locks. This measures how repeatable a lock is.
 
 ## E2. Verification benchmark
 
@@ -98,7 +98,7 @@ This is the only part where things move for real reasons, so even a small amount
 
 1. On the study map, also save 6–8 things you use every day (charger, keys, remote, mug, glasses, wallet) where they usually live. Answer "How often does it move?" honestly.
 2. Each evening: tag `home=A;exp=E5;split=test`, mode PAIRED. Locate, then query each of these items: Find → Verify once at the ring → Done → the true answer.
-3. If an item was somewhere else, find it, then Items → the item → "Update location" and tap it where it is now.
+3. If an item was somewhere else, find it, then Items → the item → "Moved it" and tap it where it is now.
 
 ## What changed from the first plan
 

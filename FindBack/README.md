@@ -2,7 +2,7 @@
 
 Android (Kotlin, ARCore) prototype for the CS 6301 project. It builds on Google's ARCore `ml_kotlin` sample (Apache 2.0).
 
-Current version: **v0.4 (study instrumentation)** on top of v0.3 (home map). See [the v0.4 section](#v04-study-instrumentation-nov-16) and `docs/STUDY_SPEC_v0.4.md`, and [the v0.3 section](#v03-home-map-nov-16) and `docs/PLAN_v0.3_home_map.md`. The table below describes v0; where a later section differs, the later section wins.
+Current version: **v0.6 (a simpler screen)**, see [the v0.6 section](#v06-a-simpler-screen-nov-16) and `docs/PLAN_v0.6_ui.md`, on top of v0.5 Block A (scan mode, `docs/PLAN_v0.5_scan_once.md`), v0.4 (study instrumentation) and v0.3 (home map). See [the v0.4 section](#v04-study-instrumentation-nov-16) and `docs/STUDY_SPEC_v0.4.md`, and [the v0.3 section](#v03-home-map-nov-16) and `docs/PLAN_v0.3_home_map.md`. The table below describes v0; where a later section differs, the later section wins.
 
 ## What v0 does
 
@@ -32,23 +32,23 @@ adb logcat -s FindBack FindBackEvent   # live log
 One-time setup of the home map:
 
 1. Choose a home fix point. Either show the Earth picture (iPad full screen, or the print) in a fixed place, or pick a **spot**: a phone pose you can repeat, such as the phone pressed against a door frame.
-2. Set the picture width first if you use the picture: tap the status panel → **Picture width** (iPad mini 6/7 ≈ 11.6 cm). The app restarts to apply it.
+2. Set the picture width first if you use the picture: menu button (⋮, top right) → **Settings…** → **Picture width** (iPad mini 6/7 ≈ 11.6 cm). The app restarts to apply it.
 3. Set home:
    - Picture: hold the phone 0.5–1 m from it until the app asks **Set home here?**, then tap **Set home**.
-   - Spot: tap the status panel → **Set home here with a spot** → hold the pose → **Lock** → name it. The phone can be upright or on its side, as long as you use the same way each time.
-4. The status shows **Located · Home picture · 0 m walked**. Tap the **Room** chip and pick **New room…** to name the room you are in.
-5. Walk slowly through every room. The mini-map (top right; tap to enlarge) shows the trail. When you enter a new room, set it with the Room chip; walking into a room you already named switches the chip after two trail points.
-6. Optional: in far rooms, add more spots (status panel → **Add a spot here**) so a later session can locate there too.
+   - Spot: press **Set home here** (bottom button) → hold the pose → **Lock** → name it. The phone can be upright or on its side, as long as you use the same way each time.
+4. The status pill (top left) shows **Which room?**. Tap it and pick **New room…** to name the room you are in.
+5. Walk slowly through every room. The mini-map (top right; tap to enlarge) shows the trail. When you enter a new room, set it with the status pill; walking into a room you already named switches the pill after two trail points.
+6. Optional: in far rooms, add more spots (menu ⋮ → **Add a spot here**) so a later session can locate there too.
 7. Tap each object and name it. The register dialog shows the room (tap to change) and warns when you are not located or more than 1.5 m away.
 
 Each later session:
 
-1. Launch, then locate: look at the picture (it locates automatically), or status panel → **Use a spot** → line up the faint ghost image with the live view → **Lock**.
-2. Query trial: Items → pick one → Find. The card names the room and the walk length; follow the white chevron along the walked path until the ring appears on the item (NEAR). Then Verify (aim at the ring) → Done → ground truth (five choices, see v0.4) → for "At the marker" or "Nearby", tap the object's true centre (marker error or displacement).
+1. Launch, then locate: look at the picture (it locates automatically), or press **Locate** (bottom button; also in the menu ⋮) → line up the faint ghost image with the live view → **Lock**.
+2. Query trial: Items → pick one → Find. The card names the room and the walk length; follow the white arrows along the walked path until the ring appears on the item (NEAR). Then Verify (aim at the ring) → Done → ground truth (five choices in study mode, see v0.4 and v0.6) → for "At the marker" or "Nearby", tap the object's true centre (marker error or displacement).
 
 Restart test: kill the app, relaunch, locate, and check that the markers land on the objects.
 
-To start over: status panel → **New map…** moves `records.json` and `map.json` into `archive/<yyyyMMdd-HHmmss>/` and restarts. Nothing is deleted.
+To start over: menu ⋮ → **Start a new map…** moves `records.json` and `map.json` into `archive/<yyyyMMdd-HHmmss>/` and restarts. Nothing is deleted.
 
 ## Pull the study data
 
@@ -69,7 +69,7 @@ adb pull /sdcard/Android/data/edu.cs6301.findback/files ./findback_data
 
 ## Settings to tune
 
-- Picture width: status panel → **Picture width** (stored in preferences; `MainActivity.DEFAULT_REF_WIDTH_M` is the default).
+- Picture width: menu ⋮ → **Settings…** → **Picture width** (stored in preferences; `MainActivity.DEFAULT_REF_WIDTH_M` is the default).
 - `VerificationPolicy.MATCH_THRESHOLD`, `AGE_MINUTES`, `DISTRACTOR_SIMILARITY`, `DRIFT_METERS`: set these on the development session and freeze them before the test session.
 - v0.3 map thresholds (starting values from the plan) are named constants at the top of each class: `ImageFixWindow` and `SpotCollector` (`map/FixEstimator.kt`), `Localizer`, `WalkGraph`, `GuidancePlanner`, `DriftTracker` and `TrackingLossDetector` (`map/Drift.kt`), `MapStore`.
 
@@ -93,10 +93,10 @@ Positions no longer hang off one reference picture. The app keeps its own gravit
 
 - **Map frame and fix points.** The map frame differs from ARCore's world by a yaw and a translation only (`map/Pose4.kt`). A fix point is the picture (pose averaged until 20 samples from the last 1.5 s agree within 2 cm and 2°, or the median after 3 s, logged as `loose`) or a spot (camera pose averaged over 10 frames; the heading comes from whichever display axis is more horizontal, so the phone can be upright or on its side, and the choice is stored with the spot). After a fix, an ARCore anchor carries the fix pose so ARCore's own map corrections move the map with the world.
 - **Refresh and drift.** While the picture stays in view, the app re-fixes at most every 2 s and logs the jump (the drift measurement). A jump over 0.75 m or 15° asks before applying; the usual cause is that the iPad was moved.
-- **Walk graph and rooms.** Breadcrumbs every 0.5 m of where the phone has been while located; an edge only joins consecutive points within 1.2 m, so routes follow walked paths. Rooms are named with the Room chip; unlabelled trail takes the current room, and an explicit pick relabels trail within 1 m.
+- **Walk graph and rooms.** Breadcrumbs every 0.5 m of where the phone has been while located; an edge only joins consecutive points within 1.2 m, so routes follow walked paths. Rooms are named with the Room chip (v0.6: the status pill); unlabelled trail takes the current room, and an explicit pick relabels trail within 1 m.
 - **Guidance modes.** `NO_FIX` (cannot be placed: room, photo, "go to a fix point"), `FAR_ROUTE` (room, walk length, white chevron 1.5 m ahead along the route), `FAR_NO_ROUTE` (room and straight distance, no arrow), `NEAR` (ring and edge arrow as in v0.2). NEAR holds within 3 m of remaining route, or 5 m straight in the same room, or 2.5 m when not known to be in different rooms, or 4 m for a same-session anchor; leaving needs 1 m more.
 - **Mini-map** (top right, tap to enlarge): trail, room names, fix points (square = picture, diamond = spot), items, target (green ring), route (blue) and you (blue dot with heading).
-- **Location sheet** (tap or long-press the status panel): picture width, add a spot, use a spot (ghost image), rename a room, new map.
+- **Location sheet** (tap or long-press the status panel): picture width, add a spot, use a spot (ghost image), rename a room, new map. v0.6: the Home sheet, opened with the menu button; "Use a spot" is **Locate**.
 - **Records.** New records store `mapId`, `mapPosition` (item in the map frame), `viewPosition` (where the camera stood, the route's end) and `roomId`. Records without a map position, or from another map, are listed as "photo only (saved before this map)"; the v0.2 pilot items load in this state. Position source is now `SESSION`, `MAP` or `NONE` (old logs contain `REFERENCE`; the evaluator accepts both).
 - **Policy.** The v0.2 "reference not fully tracked" trigger is replaced by: position source `MAP` and (more than `DRIFT_METERS` = 20 m walked since the fix, or a tracking loss since the fix). These are known before any capture.
 - **Unchanged:** crop logic, candidate rules, embedder, detector, `MATCH_THRESHOLD`.
@@ -130,21 +130,21 @@ All v0.2 keys are kept with their meaning (`register.refAvailable` is now always
 
 ## v0.4: study instrumentation (Nov 16)
 
-Implements section 3 of `docs/STUDY_SPEC_v0.4.md`. Everything is additive: every earlier event key keeps its name and meaning, and the verification pipeline and `VerificationPolicy.decide()` are unchanged. With capture mode FREE and no study tag the app behaves as v0.3, except for the five-way ground truth, the mobility question, and the new **Update location** and **Study settings…** entries.
+Implements section 3 of `docs/STUDY_SPEC_v0.4.md`. Everything is additive: every earlier event key keeps its name and meaning, and the verification pipeline and `VerificationPolicy.decide()` are unchanged. With capture mode FREE and no study tag the app behaves as v0.3, except for the five-way ground truth, the mobility question, and the new **Update location** and **Study settings…** entries. (v0.6: in that everyday mode the study prompts are replaced by simpler ones; see the v0.6 section. With a tag or another mode everything below is unchanged.)
 
 ### Study settings (S1)
 
-Status panel → **Study settings…**. Stored in preferences; they take effect at once and survive restarts. They cannot be changed during a search, so all events of one query carry the same settings.
+Menu ⋮ → **Study settings…**. Stored in preferences; they take effect at once and survive restarts. They cannot be changed during a search, so all events of one query carry the same settings.
 
 - **Study tag:** free text, up to 60 characters, by convention `key=value` pairs separated by `;`, for example `home=A;exp=E3;round=2;light=evening;split=dev`. The app does not check the form.
 - **Capture mode:** `FREE` (default), `PAIRED` or `BENCHMARK`.
 
-When a tag is set or the mode is not FREE, the status panel shows a line such as `Study: PAIRED · home=A;exp=E3;round=2`.
+When a tag is set or the mode is not FREE, a small amber line under the status pill shows `Study: PAIRED · home=A;exp=E3;round=2`.
 
 ### Capture modes (S2, S3)
 
 - **FREE:** any number of captures per query, no extra prompts.
-- **PAIRED:** one capture per query. Verify is disabled once a capture has produced its result. Done without a capture asks **Capture once before finishing?** (Back / Finish without capture) when the item has a position right now; when it has none, Done goes straight to the ground truth. `query_end.noCaptureReason` records which.
+- **PAIRED:** one capture per query. Verify is hidden once a capture has produced its result (v0.4: disabled). Done without a capture asks **Capture once before finishing?** (Back / Finish without capture) when the item has a position right now; when it has none, Done goes straight to the ground truth. `query_end.noCaptureReason` records which.
 - **BENCHMARK:** any number of captures. After each result is closed the app asks **What is at the marker right now?** (The item / Nothing / A different object / A look-alike) with a **Condition** choice (default, near, far, angled, dim, bright, occluded) that stays as last set until the app restarts. Closing that dialog without a choice logs the label as `null`.
 
 In PAIRED and BENCHMARK, Done waits while a capture is still being processed.
@@ -153,10 +153,10 @@ In PAIRED and BENCHMARK, Done waits while a capture is still being processed.
 
 Five choices: **At the marker** (`present`), **Nearby, but not at the marker** (`displaced`), **Not in this area** (`absent`), **Another object is at the marker** (`replaced`), **Skip (not usable)** (`skip`). `present` and `displaced` continue with a tap on the item's true centre (or Skip): the distance to the marker is the marker error for `present` and the displacement for `displaced`.
 
-### Mobility (S6) and Update location (S7)
+### Mobility (S6) and Update location (S7, "Moved it" since v0.6)
 
 - The register dialog asks **How often does it move?** (Rarely / Sometimes / Often, default Sometimes), stored as `mobility` = `rare`, `some` or `often`.
-- **Update location:** Items → the item → **Update location**. The card shows the item; tap it where it is now. The normal capture runs and the register dialog opens as **Update location of X**, with the name and mobility of the old record and the room of the new place (the old room when the new place has none). Save replaces the old record: the new one gets the same `lineageId`, `supersedes` = the old id and `moveCount` + 1, and the old record leaves `records.json`. Its crop, verification files and log lines stay. Cancel, in the card or in the dialog, changes nothing.
+- **Update location:** Items → the item → **Moved it** (v0.4: **Update location**). The card shows the item; tap it where it is now. The normal capture runs and the register dialog opens as **New place for "X"** (v0.4: **Update location of X**), with the name and mobility of the old record and the room of the new place (the old room when the new place has none). Save replaces the old record: the new one gets the same `lineageId`, `supersedes` = the old id and `moveCount` + 1, and the old record leaves `records.json`. Its crop, verification files and log lines stay. Cancel, in the card or in the dialog, changes nothing.
 - A new ordinary record has `lineageId` = its own id, `moveCount` 0 and `lineageStartMs` = `lastSeenMs`; files from before v0.4 read as that. `lineageStartMs` is carried along a lineage, so `lineageAgeMin` counts from the item's first registration.
 - Records are still never changed by a verification.
 
@@ -183,7 +183,7 @@ Five choices: **At the marker** (`present`), **Nearby, but not at the marker** (
 | `add` | The new record |
 | `rename` | The record under its new name |
 | `delete` | The record that was removed |
-| `supersede` | The new record of **Update location**; its `supersedes` is the record that left the active list |
+| `supersede` | The new record of **Moved it** (Update location); its `supersedes` is the record that left the active list |
 
 Replaying the lines in order gives the active list at any time. Two kinds of line carry one more key: `"backfill": true` on the `add` lines reconstructed, once, for records that were already in `records.json` when the log was first created (their `t` and `session` are the record's own `lastSeenMs` and `sessionId`, as at registration), and `"reason": "map_archived"` on the `delete` lines written when **New map** moves `records.json` to the archive.
 
@@ -202,6 +202,27 @@ Replaying the lines in order gives the active list at any time. Two kinds of lin
 | `verify_label` | `query`, `record`, `attempt`, `label` (`target`, `empty`, `other`, `lookalike`, or null when dismissed), `condition`. BENCHMARK only, one per `verify`. |
 | `query_end` | `groundTruth` is now one of `present`, `displaced`, `absent`, `replaced`, `skip`. Adds `captures` (captures that produced a `verify` event; `verifications` still counts attempts), `noCaptureReason` (null when `captures` > 0, else `user_skipped` when the item had a position at Done, else `not_located`; logged in every mode), `msToFirstVerify` (the first capture's `msSinceQueryStart`, or null). `markerError` adds `displaced` (true or false). |
 
+## v0.6: a simpler screen (Nov 16)
+
+`docs/PLAN_v0.6_ui.md`. Only the user interface changed. Map, localizer, scan pipeline, verification, `VerificationPolicy`, stores, file formats and every event stay as they were, except one added field on `query_end`.
+
+- **One screen state at a time,** decided by the pure `ui/UiModel.kt` (unit-tested): locating with the lock bar, measuring, finding, "Moved it", scanning, no map, not located, ready. The bottom bar shows only buttons that work now, primary on the right (filled), secondary on the left (outlined): Items / Locate when not located, Items / Scan when located, Done / Verify during a search, Stop scan during a scan, Set home here without a map, Cancel / Lock in the lock bar.
+- **Top:** a status pill (room, "Which room?", "Not located", "No home yet", "Tracking lost"; tap to pick the room), the menu button (⋮, the Home sheet), the study line in study mode, one instruction line, and a message banner that replaces the Snackbar, so messages never move the buttons.
+- **Study mode** is on when a study tag is set or the capture mode is not FREE, and is fixed for a query at its start. It keeps every v0.5 prompt: the five-way ground truth and the measuring tap, PAIRED's capture-first prompt, the verification result dialog with the BENCHMARK label after it, the policy line, and the registration debug line and mobility question.
+- **Everyday mode** (no tag, FREE): Done asks **Did you find it?**: **Yes, it's here** (`present`), **It was somewhere else** (`displaced`; then **Moved it** for a tapped item, or a hint to scan again for a scanned one), **Not found** (`absent`), **Keep looking** or Back (nothing logged). There is no measuring tap. The verification result appears in the guide card ("Still here" or "Could not confirm"); a tap on it shows both photos. Registration asks no mobility question: an update keeps the record's value, a new item gets `some`.
+- **Locate** is a bottom button when not located, and also in the guide card and the Home sheet. One spot opens its lock bar at once; several ask which, the home spot first.
+- **Items** is a full-screen panel: search over names, labels and room names, room chips with two or more rooms, and an item sheet with Find, Rename, Moved it (tapped items) and Delete.
+- **Home sheet** (menu): Locate, Set home here or Add a spot here, Rooms…, Settings… (picture width, Save scan frames), Study settings… (tag and mode), Start a new map….
+- **Registration:** the name field starts with the default name (or the old name for Moved it); the first tap selects it, so typing replaces it.
+- **Back** closes the Items panel, cancels the lock bar and Moved it, and does not leave the app during a search or a scan.
+
+### v0.6 events
+
+| Event | Change |
+| --- | --- |
+| `query_end` | adds `truthPrompt`: `study` (the five-way prompt) or `simple` ("Did you find it?"). Everyday queries carry no study tag, so the analysis already leaves them out. |
+| `register` | unchanged fields. `nameSource` is `typed` only when the saved name differs from the default name (new item) or from the old name (Moved it); with the field now pre-filled, saving the default unchanged is `default`, as before. |
+
 ## Known limits
 
 - v0.3: yaw error at the fix point grows with distance (2° is 17 cm at 5 m), so far rooms may fail to verify an object that is there. Measure the marker error first; a wider verification search is a separate change.
@@ -211,5 +232,5 @@ Replaying the lines in order gives the active list at any time. Two kinds of lin
 - v0.4: `analysis/evaluate.py` still keeps only `present` and `absent` queries; `displaced` and `replaced` need the v0.4 analysis.
 
 - v0.2 only: the reference pose was a single live estimate, not averaged over frames (v0.3 averages).
-- Records are never updated by verification, so every condition queries the same memory. The only change to an item's memory is **Update location** (v0.4), which replaces the record.
+- Records are never updated by verification, so every condition queries the same memory. The only change to an item's memory is **Moved it** (v0.4 Update location), which replaces the record.
 - There is no tap-to-measure for guidance error yet; that is planned for v0.2.

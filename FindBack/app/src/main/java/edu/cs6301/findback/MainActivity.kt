@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
   var captureMode: CaptureMode = CaptureMode.FREE
     private set
 
-  /** v0.5: "Save scan frames" (study settings dialog); read when a scan starts. */
+  /** v0.5: "Save scan frames" (v0.6: Home sheet → Settings); read when a scan starts. */
   @Volatile
   var scanSaveFrames: Boolean = DEFAULT_SCAN_SAVE_FRAMES
     private set
@@ -106,7 +106,7 @@ class MainActivity : AppCompatActivity() {
   /** `studyTag` and `captureMode` as log fields. */
   fun studyFields(): Map<String, Any?> = mapOf("studyTag" to studyTag, "captureMode" to captureMode.name)
 
-  /** Location sheet → Study settings: store and log a change. Takes effect at once, no restart. */
+  /** Home sheet → Study settings: store and log a change. Takes effect at once, no restart. */
   fun setStudySettings(tag: String, mode: CaptureMode) {
     val clean = StudySettings.cleanTag(tag)
     if (clean == studyTag && mode == captureMode) return
@@ -129,7 +129,7 @@ class MainActivity : AppCompatActivity() {
   }
 
   /**
-   * "New map" (confirmed in the location sheet): move records.json and map.json into
+   * "Start a new map" (confirmed in the Home sheet): move records.json and map.json into
    * archive/<yyyyMMdd-HHmmss>/ and restart. Crops, verification frames, ghost images and
    * events.jsonl stay where they are. Nothing is deleted.
    */

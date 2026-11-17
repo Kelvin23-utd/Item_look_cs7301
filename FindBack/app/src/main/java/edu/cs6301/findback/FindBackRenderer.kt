@@ -64,7 +64,9 @@ import edu.cs6301.findback.ml.YuvPlanes
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.CaptureRules
 import edu.cs6301.findback.study.GroundTruth
-import edu.cs6301.findback.study.StudySettings
+import edu.cs6301.findback.ui.Action
+import edu.cs6301.findback.ui.FoundAnswer
+import edu.cs6301.findback.ui.UiModel
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -146,6 +148,12 @@ class Query(
     const val SOURCE_TAP = "tap"
     const val SOURCE_SCAN = "scan"
   }
+
+  /**
+   * v0.6: study mode (a tag is set or the mode is not FREE), fixed for the whole query. Study mode
+   * keeps the v0.5 prompts; everyday mode asks "Did you find it?" at Done.
+   */
+  val studyMode: Boolean = UiModel.studyMode(studyTag, captureMode)
 
   /** Capture attempts started (an attempt that fails before its `verify` event still counts). */
   @Volatile var verifications = 0
@@ -374,47 +382,63 @@ class FindBackRenderer(private val activity: MainActivity) :
 
   fun bindView(view: MainView) {
     this.view = view
-    view.itemsButton.setOnClickListener { showItems() }
-    view.verifyButton.setOnClickListener { pendingVerify = true }
-    view.doneButton.setOnClickListener { onDonePressed() }
-    // v0.5: Scan when idle and located, Stop during a scan.
-    view.scanButton.setOnClickListener { if (scan.active != null) requestStopScan() else requestStartScan() }
+    view.onAction = { onAction(it) }
   }
 
-  /** UI thread: the Items list, tapped records and (v0.5) scanned entries together. */
+  /** UI thread (v0.6): a bottom-bar button, or Locate in the guide card. Lock and Cancel stay in [MainView]. */
+  private fun onAction(a: Action) {
+    when (a) {
+      Action.ITEMS -> showItems()
+      Action.LOCATE -> view.dialogs.locate(uiState)
+      Action.SCAN -> requestStartScan()
+      Action.STOP_SCAN -> requestStopScan()
+      Action.SET_HOME -> view.dialogs.startAddSpot(home = true)
+      Action.DONE -> onDonePressed()
+      Action.SKIP -> onSkipPressed()
+      Action.VERIFY -> pendingVerify = true
+      Action.CANCEL_UPDATE -> cancelUpdate("waiting")
+      Action.LOCK, Action.CANCEL_LOCK -> {}
+    }
+  }
+
+  /** UI thread: the Items panel, tapped records and (v0.5) scanned entries together. */
   private fun showItems() {
     if (scan.active != null) return view.toast("Stop the scan first.")
-    view.showItems(
-        store.snapshot().sortedByDescending { it.lastSeenMs },
-        store.root,
-        uiState,
-        onFind = { startQuery(it) },
-        onUpdate = { startUpdate(it) },
-        onRename = { rec, name ->
-          store.rename(rec.id, name)
-          events.log("rename", mapOf("record" to rec.id, "from" to rec.name, "to" to name))
-        },
-        onDelete = { rec ->
-          sessionAnchors.remove(rec.id)?.let { anchorsToDetach.add(it) }
-          store.delete(rec.id)
-          events.log("delete", mapOf("record" to rec.id, "name" to rec.name))
-        },
-        entries = scan.inventory.snapshot(),
-        lastScanId = scan.inventory.lastScanId,
-        entryActions =
-          MainView.EntryActions(
-            onFind = { e -> startQuery(e.toObjectRecord(), Query.SOURCE_SCAN, e.id) },
-            onRename = { e, name -> renameEntry(e, name) },
-            onDelete = { e -> deleteEntry(e) },
-          ),
-      )
+    view.items.open(itemsData(), itemActions)
   }
+
+  private fun itemsData() =
+    ItemsPanel.Data(store.snapshot(), scan.inventory.snapshot(), scan.inventory.lastScanId, uiState, store.root)
+
+  /** UI thread: show the change in the Items panel, if it is open. */
+  private fun refreshItems() = view.items.refresh(itemsData())
+
+  private val itemActions =
+    ItemsPanel.Actions(
+      onFind = { startQuery(it) },
+      onMoved = { startUpdate(it) },
+      onRename = { rec, name ->
+        store.rename(rec.id, name)
+        events.log("rename", mapOf("record" to rec.id, "from" to rec.name, "to" to name))
+        refreshItems()
+      },
+      onDelete = { rec ->
+        sessionAnchors.remove(rec.id)?.let { anchorsToDetach.add(it) }
+        store.delete(rec.id)
+        events.log("delete", mapOf("record" to rec.id, "name" to rec.name))
+        refreshItems()
+      },
+      onFindEntry = { e -> startQuery(e.toObjectRecord(), Query.SOURCE_SCAN, e.id) },
+      onRenameEntry = { e, name -> renameEntry(e, name) },
+      onDeleteEntry = { e -> deleteEntry(e) },
+    )
 
   /** UI thread → IO: a scanned entry's new name; it no longer follows the detector's label. */
   private fun renameEntry(e: InventoryEntry, name: String) {
     scope.launch(Dispatchers.IO) {
       val renamed = scan.inventory.rename(e.id, name) ?: return@launch
       events.log("inv_rename", mapOf("inventoryId" to e.id, "from" to e.name, "to" to name, "entry" to renamed.toJson(withEmbedding = false)))
+      view.post { refreshItems() }
     }
   }
 
@@ -423,24 +447,53 @@ class FindBackRenderer(private val activity: MainActivity) :
     scope.launch(Dispatchers.IO) {
       val removed = scan.inventory.delete(e.id) ?: return@launch
       events.log("inv_delete", mapOf("inventoryId" to e.id, "name" to removed.name, "entry" to removed.toJson(withEmbedding = false)))
+      view.post { refreshItems() }
     }
   }
 
-  /** UI thread. Done is "Cancel" during "Update location" and "Skip" during a measurement. */
+  /** UI thread, study mode: Skip during a measurement ends the query without one. */
+  private fun onSkipPressed() {
+    val q = query ?: return
+    if (q.measuring) endQuery(q, q.truth ?: GroundTruth.PRESENT, null) // measurement skipped
+  }
+
+  /**
+   * UI thread: Done. Study mode keeps the v0.5 prompts (PAIRED capture-first, then the five-way
+   * ground truth); everyday mode asks "Did you find it?" (v0.6, plan section 6.3).
+   */
   private fun onDonePressed() {
     if (updateTarget != null) return cancelUpdate("waiting")
     val q = query ?: return
-    if (q.measuring) {
-      endQuery(q, q.truth ?: GroundTruth.PRESENT, null) // measurement skipped
-      return
-    }
+    if (q.measuring) return onSkipPressed()
     // PAIRED and BENCHMARK tie every capture to this query's end: let a running capture finish.
     if (q.captureMode != CaptureMode.FREE && q.capturing) return view.toast("Still processing the capture…")
     val resolvable = q.resolvable
+    if (!q.studyMode) return askFoundIt(q, resolvable)
     if (CaptureRules.askCaptureFirst(q.captureMode, q.captures, resolvable)) {
       view.askCaptureFirst(q.record.name) { askGroundTruth(q, resolvable) }
     } else {
       askGroundTruth(q, resolvable)
+    }
+  }
+
+  /**
+   * UI thread, everyday mode: "Did you find it?". The answer ends the query with PRESENT,
+   * DISPLACED or ABSENT and no measuring tap; "Keep looking" or Back changes nothing. "It was
+   * somewhere else" goes on to "Moved it" for a tapped record.
+   */
+  private fun askFoundIt(q: Query, resolvable: Boolean) {
+    if (query !== q || q.ended) return
+    view.askFoundIt { answer ->
+      if (query !== q || q.ended) return@askFoundIt
+      q.resolvableAtDone = resolvable
+      endQuery(q, answer.truth, null)
+      if (answer == FoundAnswer.ELSEWHERE) {
+        if (q.source == Query.SOURCE_TAP) {
+          store.get(q.record.id)?.let { startUpdate(it) }
+        } else {
+          view.toast("Scan that area again to update it")
+        }
+      }
     }
   }
 
@@ -453,7 +506,7 @@ class FindBackRenderer(private val activity: MainActivity) :
       if (GroundTruth.measured(truth)) {
         q.truth = truth
         q.measuring = true
-        view.enterMeasureMode(truth == GroundTruth.DISPLACED)
+        view.refresh() // the guide card asks for the measuring tap; Skip replaces Done
       } else {
         endQuery(q, truth, null)
       }
@@ -481,17 +534,17 @@ class FindBackRenderer(private val activity: MainActivity) :
   /** Called on the UI thread for a single tap on the camera view (VIEW pixel coordinates). */
   fun onTap(x: Float, y: Float) {
     if (view.lockModeActive) {
-      view.toast("Line up the view, then press Lock (or Cancel).")
+      view.toast("Line up the view, then press Lock")
       return
     }
     val q = query
     if (q != null && !q.measuring) {
-      view.toast("Press Done to finish this search before registering new items.")
+      view.toast("Press Done to end this search")
       return
     }
     // v0.5: registration taps are ignored during a scan (plan section 8).
     if (scan.active != null) {
-      view.toast("Scanning: taps do not register items. Press Stop first.")
+      view.toast("Press Stop scan first")
       return
     }
     pendingTap.set(PendingTap(PointF(x, y), updateTarget))
@@ -506,7 +559,9 @@ class FindBackRenderer(private val activity: MainActivity) :
   private fun startUpdate(rec: ObjectRecord) {
     if (query != null || updateTarget != null) return
     updateTarget = rec
-    view.enterUpdateMode(rec, store.loadBitmap(rec.cropFile))
+    val st = uiState
+    val roomName = if (rec.mapId != null && rec.mapId == st?.map?.mapId) st.roomName(rec.roomId) else null
+    view.enterUpdateMode(rec, store.loadBitmap(rec.cropFile), roomName)
   }
 
   /** Back to normal with nothing changed. [stage]: "waiting" (before a tap) or "dialog". */
@@ -515,7 +570,7 @@ class FindBackRenderer(private val activity: MainActivity) :
     updateTarget = null
     view.exitUpdateMode()
     events.log("update_cancel", mapOf("record" to rec.id, "stage" to stage))
-    view.toast("Location of \"${rec.name}\" not changed.")
+    view.toast("The place of \"${rec.name}\" is not changed.")
   }
 
   // ---------------------------------------------------------------- location requests (UI thread)
@@ -639,11 +694,7 @@ class FindBackRenderer(private val activity: MainActivity) :
       ) + localizer.proxyFields(nowMs)
     )
     val roomName = localizer.roomName(q.itemRoom)
-    view.post {
-      view.enterGuideMode(
-        rec, store.loadBitmap(rec.cropFile), decision, inputs.positionSource != PositionSource.NONE, roomName
-      )
-    }
+    view.post { view.enterGuideMode(q, store.loadBitmap(rec.cropFile), roomName) }
   }
 
   /** UI thread. */
@@ -672,6 +723,8 @@ class FindBackRenderer(private val activity: MainActivity) :
         "captures" to q.captures,
         "noCaptureReason" to CaptureRules.noCaptureReason(q.captures, q.resolvableAtDone),
         "msToFirstVerify" to q.msToFirstVerify,
+        // v0.6: which prompt gave the ground truth ("simple": "Did you find it?").
+        "truthPrompt" to UiModel.truthPrompt(q.studyMode),
       )
     )
     query = null
@@ -807,7 +860,7 @@ class FindBackRenderer(private val activity: MainActivity) :
       view.post {
         view.toast(
           if (useful) "Picture found: hold the phone still near it for a moment"
-          else "Picture found, but it is not a fix point of this map (see the location sheet)"
+          else "Picture found, but this map does not use it (see the menu ⋮)"
         )
       }
     }
@@ -995,6 +1048,7 @@ class FindBackRenderer(private val activity: MainActivity) :
             defaultName = updateOf?.name ?: nextDefaultName(),
             rooms = uiState?.map?.rooms ?: emptyList(),
             update = updateOf,
+            studyMode = UiModel.studyMode(activity.studyTag, activity.captureMode),
             onSave = { name, typed, roomId, picked, newRoom, mobility ->
               if (picked) requestPickRoom(roomId, newRoom, "register")
               if (updateOf != null) {
@@ -1148,8 +1202,8 @@ class FindBackRenderer(private val activity: MainActivity) :
       }
       view.post {
         view.toast(
-          (if (old != null) "Updated location of \"$name\"" else "Saved \"$name\"") +
-            if (d.mapPosition == null) " (not located: valid this session only)"
+          (if (old != null) "Saved the new place of \"$name\"" else "Saved \"$name\"") +
+            if (d.mapPosition == null) " (this session only: not located)"
             else roomName?.let { " in $it" } ?: ""
         )
       }
@@ -1203,14 +1257,12 @@ class FindBackRenderer(private val activity: MainActivity) :
     val emb = embedder ?: return view.post { view.toast("Model still loading…") }
     val (world, source) =
       resolve(q.record)
-        ?: return view.post {
-          view.toast("No spatial cue yet. Go to a fix point (picture or spot) so I can locate you.")
-        }
+        ?: return view.post { view.toast("Not located: press Locate first.") }
 
     val clip = FloatArray(4)
     Matrix.multiplyMV(clip, 0, viewProjectionMatrix, 0, floatArrayOf(world[0], world[1], world[2], 1f), 0)
     if (clip[3] <= 0f) {
-      return view.post { view.toast("The remembered spot is behind you. Follow the arrow, then press Verify.") }
+      return view.post { view.toast("The item's last place is behind you. Follow the arrow, then press Verify.") }
     }
     val ndc = floatArrayOf(clip[0] / clip[3], clip[1] / clip[3])
     if (abs(ndc[0]) > 0.9f || abs(ndc[1]) > 0.9f) {
@@ -1347,13 +1399,16 @@ class FindBackRenderer(private val activity: MainActivity) :
         }
         val storedThumb = store.loadBitmap(rec.cropFile)
         withContext(Dispatchers.Main) {
-          if (query === q) {
-            view.setVerifyLine(outcome, similarity)
-            if (!CaptureRules.verifyAllowed(q.captureMode, q.captures)) view.verifyButton.isEnabled = false
-          }
-          view.showVerifyResult(storedThumb, best.first.third, similarity, confirmed) {
-            // v0.4 BENCHMARK: once the result is dismissed, the experimenter labels the capture.
-            if (q.captureMode == CaptureMode.BENCHMARK) askVerifyLabel(q, rec.id, attempt)
+          // The guide card reads q.lastOutcome; PAIRED hides Verify after its capture.
+          if (query === q) view.refresh()
+          if (q.studyMode) {
+            view.showVerifyResult(storedThumb, best.first.third, similarity, confirmed) {
+              // v0.4 BENCHMARK: once the result is dismissed, the experimenter labels the capture.
+              if (q.captureMode == CaptureMode.BENCHMARK) askVerifyLabel(q, rec.id, attempt)
+            }
+          } else {
+            // v0.6 everyday mode: the result is in the guide card; a tap on it shows both photos.
+            view.setLastCapture(q.id, storedThumb, best.first.third, similarity, confirmed)
           }
         }
       } catch (e: Exception) {
@@ -1419,9 +1474,9 @@ class FindBackRenderer(private val activity: MainActivity) :
       when {
         scan.active != null -> return
         cameraTracking != TrackingState.TRACKING -> "Move the phone slowly until tracking resumes, then press Scan."
-        localizer.tWM == null || localizer.currentMapId == null -> "Locate first (picture or spot), then press Scan."
+        localizer.tWM == null || localizer.currentMapId == null -> "Press Locate first, then Scan."
         query != null -> "Finish this search (Done) before scanning."
-        updateTarget != null -> "Finish \"Update location\" before scanning."
+        updateTarget != null -> "Finish \"Moved it\" before scanning."
         localizer.lockActive -> "Finish the spot lock before scanning."
         mlBusy -> "Still processing the previous capture…"
         embedder == null -> "Model still loading…"
@@ -1553,12 +1608,12 @@ class FindBackRenderer(private val activity: MainActivity) :
     }
   }
 
-  /** UI thread: Items is off during a scan (a search, rename or delete waits for Stop). */
+  /** UI thread: the scan bar replaces Items and Scan (a search, rename or delete waits for Stop scan). */
   private fun onScanStarted(a: ActiveScan) {
     if (scan.active !== a) return // already stopped again
-    view.itemsButton.isEnabled = false
-    view.setScanControl(MainView.ScanControl.STOP)
-    view.toast("Scan started: walk slowly and look at the things around you. Stop when done.")
+    view.items.close()
+    view.refresh()
+    view.toast("Scan started: walk slowly past the things around you. Press Stop scan when done.")
   }
 
   /** UI thread: the boxes of the latest keyframe. */
@@ -1569,10 +1624,7 @@ class FindBackRenderer(private val activity: MainActivity) :
   /** UI thread. */
   private fun onScanEnded(end: ScanEnd) {
     view.scanOverlay.setBoxes(emptyList())
-    if (scan.active == null) {
-      if (query == null && updateTarget == null) view.itemsButton.isEnabled = true
-      view.setScanControl(MainView.ScanControl.HIDDEN) // the next status update offers Scan again
-    }
+    view.refresh()
     if (activity.isFinishing || activity.isDestroyed) return
     view.showScanSummary(end) { if (scan.active == null) showItems() }
   }
@@ -1766,118 +1818,60 @@ class FindBackRenderer(private val activity: MainActivity) :
     }
 
     val tracking = camera.trackingState == TrackingState.TRACKING
-    val trackingDetail =
-      if (tracking) "" else camera.trackingFailureReason.name.lowercase().replace('_', ' ')
     val q = query
-    val upd = updateTarget
     if (q == null && tracking) labelIds = computeLabelIds(camera)
     val items = store.snapshot().size
     val located = q?.let { resolve(it.record) }
     val itemRoomName = q?.let { localizer.roomName(it.itemRoom) }
     val scanning = scan.active
-    val hint =
-      when {
-        mlBusy -> "Analyzing…"
-        q != null && q.measuring -> "Tap the true centre of \"${q.record.name}\""
-        q != null ->
-          when (q.mode) {
-            GuidanceMode.NO_FIX ->
-              if (st.pictureUsable) "Go to a fix point so I can locate you (picture, or tap here → Use a spot)"
-              else "Go to a fix point so I can locate you (tap here → Use a spot)"
-            GuidanceMode.FAR_ROUTE -> "Follow the chevron along your walked path"
-            GuidanceMode.FAR_NO_ROUTE ->
-              if (st.located) "No walked path yet: use the map (top right)"
-              else "Far away and not located: go to a fix point for a route"
-            else -> "Find \"${q.record.name}\": follow the arrow to the ring"
-          }
-        st.lockActive -> "Hold still…"
-        !tracking -> "Move the phone slowly to resume tracking"
-        scanning != null -> scanHint(scanning, st.located, now)
-        upd != null -> "Update location: tap \"${upd.name}\" where it is now, or press Cancel"
-        !st.hasMap && st.setHomeDeclined -> "No home map yet: tap here → Set home here with a spot (or restart to use the picture)"
-        !st.hasMap ->
-          "No home map yet: show the picture (%.1f cm) or tap here → Add a spot to set home".format(activity.refWidthM * 100)
-        !st.located && st.pictureUsable -> "Not located: look at the picture, or tap here → Use a spot"
-        !st.located && st.imageFixNote != null -> "Not located: picture ignored (width changed). Tap here → Use a spot"
-        !st.located -> "Not located: tap here → Use a spot"
-        st.currentRoomId == null -> "Located. Pick this room with the room button, then walk the rooms and tap objects"
-        items == 0 -> "Walk through the rooms, then tap an object to remember it"
-        else -> "Tap an object to remember it · Items to find one"
-      }
 
+    // v0.6: the guide card's cue; the rest of the screen comes from UiModel on the UI thread.
     val cue =
       if (q == null || q.measuring) null
       else {
         val r = located
-        if (q.mode != GuidanceMode.NEAR || r == null) {
-          GuidancePlanner.cue(q.mode ?: GuidanceMode.NO_FIX, itemRoomName, q.routeM, q.straightM, st.located)
-        } else {
-          val local = camera.displayOrientedPose.inverse().transformPoint(r.first)
-          val distance = sqrt(local[0] * local[0] + local[1] * local[1] + local[2] * local[2])
-          val angle = Math.toDegrees(atan2(local[0], -local[2]).toDouble())
-          val dir =
-            when {
-              abs(angle) <= 15 -> "straight ahead"
-              abs(angle) >= 135 -> "behind you"
-              angle > 0 -> "turn right %.0f°".format(angle)
-              else -> "turn left %.0f°".format(-angle)
-            }
-          val vertical =
-            when {
-              local[1] < -0.35f -> " · below"
-              local[1] > 0.35f -> " · above"
-              else -> ""
-            }
-          "%.1f m · %s%s".format(distance, dir, vertical) +
-            if (r.second == PositionSource.MAP) " (via home map)" else ""
-        }
+        val nearText =
+          if (q.mode == GuidanceMode.NEAR && r != null) {
+            val local = camera.displayOrientedPose.inverse().transformPoint(r.first)
+            val distance = sqrt(local[0] * local[0] + local[1] * local[1] + local[2] * local[2])
+            val angle = Math.toDegrees(atan2(local[0], -local[2]).toDouble())
+            val dir =
+              when {
+                abs(angle) <= 15 -> "straight ahead"
+                abs(angle) >= 135 -> "behind you"
+                angle > 0 -> "turn right %.0f°".format(angle)
+                else -> "turn left %.0f°".format(-angle)
+              }
+            val vertical =
+              when {
+                local[1] < -0.35f -> " · below"
+                local[1] > 0.35f -> " · above"
+                else -> ""
+              }
+            // The position source is a study detail.
+            "%.1f m · %s%s".format(distance, dir, vertical) +
+              if (q.studyMode && r.second == PositionSource.MAP) " (via home map)" else ""
+          } else null
+        UiModel.cue(q.mode, itemRoomName, q.routeM, q.straightM, st.located, nearText)
       }
-
-    val locLine =
-      when {
-        !st.hasMap -> "No home map"
-        st.located -> "Located · %s · %.0f m walked".format(st.fixName, st.metersSinceFix ?: 0.0)
-        else -> "Not located"
-      }
-    val locState =
-      when {
-        !st.hasMap -> MainView.LocState.NO_MAP
-        st.located -> MainView.LocState.LOCATED
-        else -> MainView.LocState.NOT_LOCATED
-      }
-    val roomChip = if (st.hasMap) (st.roomName(st.currentRoomId) ?: "not set") else null
-    val mini = miniMapData(st, q)
-    val near = q?.mode == GuidanceMode.NEAR
-    val studyLine = StudySettings.statusLine(activity.studyTag, activity.captureMode)
-
-    // v0.5: Scan is offered when idle and located; Stop shows for as long as a scan runs.
-    val scanIdleOk = st.located && q == null && upd == null && !st.lockActive
-    view.post {
-      view.setScanControl(
-        when {
-          scan.active != null -> MainView.ScanControl.STOP
-          scanIdleOk && query == null && updateTarget == null -> MainView.ScanControl.START
-          else -> MainView.ScanControl.HIDDEN
-        }
+    val frameUi =
+      UiFrame(
+        st = st,
+        tracking = tracking,
+        busy = mlBusy,
+        itemCount = items,
+        queryId = q?.id,
+        cue = cue,
+        scanItems = scanning?.itemCount ?: 0,
+        scanHint = scanning?.let { scanHint(it, st.located, now) },
+        mini = miniMapData(st, q),
       )
-      view.renderStatus(tracking, trackingDetail, locState, locLine, items, hint, roomChip, studyLine)
-      if (cue != null && query === q) view.setGuideCue(cue, located != null, near)
-      view.miniMap.setData(mini)
-    }
+    view.post { view.render(frameUi) }
   }
 
-  /** v0.5: the status hint during a scan ("Scanning: 14 items · walk slowly"). */
-  private fun scanHint(a: ActiveScan, located: Boolean, nowMs: Long): String {
-    val n = a.itemCount
-    val items = if (n == 1) "1 item" else "$n items"
-    return when {
-      !located -> "Scanning paused: not located. Look at the picture or tap here → Use a spot"
-      localizer.lockActive -> "Scanning: $items · paused for the spot lock"
-      nowMs - a.lastKeyframeElapsedMs > ScanConfig.NO_KEYFRAME_HINT_MS ->
-        "Scanning: $items · waiting for depth: move the phone sideways"
-      else -> "Scanning: $items · walk slowly"
-    }
-  }
+  /** v0.6: the scan bar's hint ("Walk slowly", "Move the phone sideways so depth can start", ...). */
+  private fun scanHint(a: ActiveScan, located: Boolean, nowMs: Long): String =
+    UiModel.scanHint(located, localizer.lockActive, nowMs - a.lastKeyframeElapsedMs > ScanConfig.NO_KEYFRAME_HINT_MS)
 
   /** Mini-map snapshot (map frame, x-z). Nodes and edges are rebuilt only when the map changed. */
   private fun miniMapData(st: Localizer.State, q: Query?): MiniMapView.Data? {
