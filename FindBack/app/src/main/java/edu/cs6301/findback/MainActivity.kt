@@ -23,6 +23,7 @@ import edu.cs6301.findback.map.HomeMap
 import edu.cs6301.findback.map.MapStore
 import edu.cs6301.findback.memory.EventLog
 import edu.cs6301.findback.memory.MemoryStore
+import edu.cs6301.findback.scan.InventoryStore
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.StudySettings
 import java.io.File
@@ -44,12 +45,17 @@ class MainActivity : AppCompatActivity() {
     private const val KEY_REF_WIDTH = "refWidthM"
     private const val KEY_STUDY_TAG = "studyTag"
     private const val KEY_CAPTURE_MODE = "captureMode"
+    /** v0.5: write every scan keyframe to scan/<scanId>/ (plan section 9). */
+    private const val KEY_SCAN_SAVE_FRAMES = "scanSaveFrames"
+    const val DEFAULT_SCAN_SAVE_FRAMES = true
   }
 
   /** New id per app launch; same-session anchors are only valid within one id. */
   val sessionId: String = UUID.randomUUID().toString().substring(0, 8)
 
   lateinit var store: MemoryStore
+  /** v0.5 scan inventory (inventory.json), separate from records.json. */
+  lateinit var inventory: InventoryStore
   lateinit var events: EventLog
   lateinit var mapStore: MapStore
   /** map.json as loaded at start-up (null: no map yet). The renderer's Localizer owns it after that. */
@@ -86,6 +92,16 @@ class MainActivity : AppCompatActivity() {
   @Volatile
   var captureMode: CaptureMode = CaptureMode.FREE
     private set
+
+  /** v0.5: "Save scan frames" (study settings dialog); read when a scan starts. */
+  @Volatile
+  var scanSaveFrames: Boolean = DEFAULT_SCAN_SAVE_FRAMES
+    private set
+
+  fun setScanSaveFrames(on: Boolean) {
+    scanSaveFrames = on
+    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_SCAN_SAVE_FRAMES, on).apply()
+  }
 
   /** `studyTag` and `captureMode` as log fields. */
   fun studyFields(): Map<String, Any?> = mapOf("studyTag" to studyTag, "captureMode" to captureMode.name)
@@ -124,6 +140,9 @@ class MainActivity : AppCompatActivity() {
     val records = store.snapshot().size
     val recordsMoved = store.archiveTo(dir)
     val mapMoved = mapStore.archiveTo(dir)
+    // v0.5: the scan inventory belongs to the map too. Without a scan there is no file and
+    // nothing is written, so `map_archived` stays as it was.
+    inventory.archiveTo(dir)
     events.log(
       "map_archived",
       mapOf("mapId" to mapId, "dir" to rel, "records" to records, "recordsMoved" to recordsMoved, "mapMoved" to mapMoved)
@@ -139,9 +158,11 @@ class MainActivity : AppCompatActivity() {
     getSharedPreferences(PREFS, MODE_PRIVATE).let { prefs ->
       studyTag = StudySettings.cleanTag(prefs.getString(KEY_STUDY_TAG, ""))
       captureMode = CaptureMode.parse(prefs.getString(KEY_CAPTURE_MODE, null))
+      scanSaveFrames = prefs.getBoolean(KEY_SCAN_SAVE_FRAMES, DEFAULT_SCAN_SAVE_FRAMES)
     }
     store = MemoryStore(root, sessionId)
     events = EventLog(root, sessionId)
+    inventory = InventoryStore(root, sessionId)
     mapStore =
       MapStore(
         root,
@@ -175,6 +196,11 @@ class MainActivity : AppCompatActivity() {
         "mapRooms" to (loadedMap?.rooms?.size ?: 0),
       ) + studyFields() // v0.4
     )
+    inventory.loadError?.let { e ->
+      // Only when inventory.json exists and cannot be read (it was copied aside).
+      Log.e(TAG, "inventory.json could not be read", e)
+      events.log("internal_error", mapOf("site" to "inventory_load", "error" to e.toString()))
+    }
 
     referenceBitmap = assets.open("reference.jpg").use { BitmapFactory.decodeStream(it) }
 

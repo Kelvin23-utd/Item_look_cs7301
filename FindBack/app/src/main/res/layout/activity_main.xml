@@ -27,6 +27,12 @@
       android:layout_width="match_parent"
       android:layout_height="match_parent" />
 
+  <!-- v0.5 scan mode: the latest keyframe's boxes and labels. Does not consume touches. -->
+  <edu.cs6301.findback.ScanOverlay
+      android:id="@+id/scanOverlay"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent" />
+
   <!-- Top: status panel (tap or long-press: location sheet) and the mini-map below it, at the right.
        The container itself is not clickable, so touches beside the mini-map reach the camera view. -->
   <LinearLayout
@@ -243,6 +249,16 @@
         android:layout_marginHorizontal="4dp"
         android:enabled="false"
         android:text="Done" />
+
+    <!-- v0.5: Scan (when idle and located) or Stop (during a scan); hidden otherwise. -->
+    <Button
+        android:id="@+id/scanButton"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:layout_marginHorizontal="4dp"
+        android:text="Scan"
+        android:visibility="gone" />
   </LinearLayout>
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

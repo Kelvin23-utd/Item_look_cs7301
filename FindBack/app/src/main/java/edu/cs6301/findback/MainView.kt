@@ -7,15 +7,20 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Typeface
 import android.opengl.GLSurfaceView
+import android.text.Editable
+import android.text.InputType
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.text.style.StyleSpan
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -38,6 +43,9 @@ import edu.cs6301.findback.map.Room
 import edu.cs6301.findback.memory.ObjectRecord
 import edu.cs6301.findback.policy.PolicyDecision
 import edu.cs6301.findback.policy.VerificationPolicy
+import edu.cs6301.findback.scan.InventoryEntry
+import edu.cs6301.findback.scan.InventoryText
+import edu.cs6301.findback.scan.ScanEnd
 import edu.cs6301.findback.study.GroundTruth
 import edu.cs6301.findback.study.Mobility
 import edu.cs6301.findback.study.VerifyLabel
@@ -67,6 +75,22 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
   /** Second status dot: is the home map located in this session? */
   enum class LocState { NO_MAP, NOT_LOCATED, LOCATED }
 
+  /** v0.5: the bottom-bar scan control. */
+  enum class ScanControl { HIDDEN, START, STOP }
+
+  /** v0.5: what the Items list does with a scanned entry. */
+  class EntryActions(
+    val onFind: (InventoryEntry) -> Unit,
+    val onRename: (InventoryEntry, String) -> Unit,
+    val onDelete: (InventoryEntry) -> Unit,
+  )
+
+  /** One row of the Items list: a tapped record or a scanned entry. */
+  private class ItemRow(val record: ObjectRecord?, val entry: InventoryEntry?) {
+    val lastSeenMs: Long
+      get() = record?.lastSeenMs ?: entry!!.lastSeenMs
+  }
+
   val root: View = View.inflate(activity, R.layout.activity_main, null)
   private val surfaceView: GLSurfaceView =
     root.findViewById<GLSurfaceView>(R.id.surfaceview).apply {
@@ -85,6 +109,8 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
   val itemsButton: Button = root.findViewById(R.id.itemsButton)
   val verifyButton: Button = root.findViewById(R.id.verifyButton)
   val doneButton: Button = root.findViewById(R.id.doneButton)
+  val scanButton: Button = root.findViewById(R.id.scanButton)
+  val scanOverlay: ScanOverlay = root.findViewById(R.id.scanOverlay)
   val miniMap: MiniMapView = root.findViewById(R.id.miniMap)
   private val roomChip: TextView = root.findViewById(R.id.roomChip)
   private val ghostImage: ImageView = root.findViewById(R.id.ghostImage)
@@ -543,6 +569,12 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       .show()
   }
 
+  /**
+   * The Items list (v0.5): tapped records and scanned entries in one list, newest first, with a
+   * search over names and labels. A tapped record opens the same dialog as before (Find, Update
+   * location, Rename, Delete); a scanned entry opens [showEntry]. Rows are marked with their kind
+   * only when the inventory has entries, so without a scan the rows read as before.
+   */
   fun showItems(
     records: List<ObjectRecord>,
     filesRoot: File,
@@ -550,17 +582,24 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
     onFind: (ObjectRecord) -> Unit,
     onUpdate: (ObjectRecord) -> Unit,
     onRename: (ObjectRecord, String) -> Unit,
-    onDelete: (ObjectRecord) -> Unit
+    onDelete: (ObjectRecord) -> Unit,
+    entries: List<InventoryEntry> = emptyList(),
+    lastScanId: String? = null,
+    entryActions: EntryActions? = null,
   ) {
-    if (records.isEmpty()) {
+    if (records.isEmpty() && entries.isEmpty()) {
       toast("No items yet. Tap an object in the camera view to remember it.")
       return
     }
-    val thumbs = records.map { r -> loadThumb(File(filesRoot, r.cropFile)) }
+    val all = (records.map { ItemRow(it, null) } + entries.map { ItemRow(null, it) }).sortedByDescending { it.lastSeenMs }
+    val shown = ArrayList(all)
+    val markKinds = entries.isNotEmpty()
+    val thumbs = HashMap<String, Bitmap?>()
+    fun thumb(path: String): Bitmap? = thumbs.getOrPut(path) { loadThumb(File(filesRoot, path)) }
     val adapter =
-      object : ArrayAdapter<ObjectRecord>(activity, 0, records) {
+      object : ArrayAdapter<ItemRow>(activity, 0, shown) {
         override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-          val r = records[position]
+          val item = getItem(position)!!
           val row =
             LinearLayout(context).apply {
               orientation = LinearLayout.HORIZONTAL
@@ -571,7 +610,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
             ImageView(context).apply {
               layoutParams = LinearLayout.LayoutParams(dp(56), dp(56))
               scaleType = ImageView.ScaleType.CENTER_CROP
-              setImageBitmap(thumbs[position])
+              setImageBitmap(thumb(item.record?.cropFile ?: item.entry!!.cropFile))
             }
           )
           row.addView(
@@ -580,17 +619,29 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
                 LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                   marginStart = dp(12)
                 }
-              val mapId = state?.map?.mapId
-              val where =
-                when {
-                  r.mapId != null && r.mapId == mapId && r.mapPosition != null ->
-                    " · " + (state?.roomName(r.roomId) ?: "room not named")
-                  r.sessionId == activity.sessionId -> " · this session only"
-                  else -> " · photo only (saved before this map)"
-                }
-              val sb = SpannableStringBuilder(r.name)
+              val r = item.record
+              val e = item.entry
+              val sb = SpannableStringBuilder(r?.name ?: e!!.name)
               sb.setSpan(StyleSpan(Typeface.BOLD), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-              sb.append("\nlast seen ${ago(r.lastSeenMs)}$where")
+              if (markKinds) {
+                val start = sb.length
+                sb.append(if (r != null) "  tapped" else "  scanned")
+                sb.setSpan(ForegroundColorSpan(GREY), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(RelativeSizeSpan(0.8f), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+              }
+              if (r != null) {
+                val mapId = state?.map?.mapId
+                val where =
+                  when {
+                    r.mapId != null && r.mapId == mapId && r.mapPosition != null ->
+                      " · " + (state?.roomName(r.roomId) ?: "room not named")
+                    r.sessionId == activity.sessionId -> " · this session only"
+                    else -> " · photo only (saved before this map)"
+                  }
+                sb.append("\nlast seen ${ago(r.lastSeenMs)}$where")
+              } else {
+                sb.append("\n").append(entryLine(e!!, state, lastScanId))
+              }
               text = sb
               textSize = 15f
             }
@@ -598,10 +649,54 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
           return row
         }
       }
+    val search =
+      EditText(activity).apply {
+        setSingleLine()
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        hint = "Search names and labels"
+        addTextChangedListener(
+          object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+
+            override fun afterTextChanged(s: Editable?) {
+              val q = s?.toString() ?: ""
+              val filtered =
+                all.filter { row ->
+                  row.record?.let { InventoryText.matches(it, q) } ?: InventoryText.matches(row.entry!!, q)
+                }
+              adapter.setNotifyOnChange(false)
+              adapter.clear()
+              adapter.addAll(filtered)
+              adapter.notifyDataSetChanged()
+            }
+          }
+        )
+      }
+    val titleBox =
+      LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(24), dp(20), dp(24), 0)
+        addView(
+          TextView(activity).apply {
+            text = "Remembered items"
+            textSize = 20f
+            setTypeface(typeface, Typeface.BOLD)
+          }
+        )
+        addView(search)
+      }
     AlertDialog.Builder(activity)
-      .setTitle("Remembered items")
+      .setCustomTitle(titleBox)
       .setAdapter(adapter) { _, i ->
-        val r = records[i]
+        val item = shown.getOrNull(i) ?: return@setAdapter
+        val e = item.entry
+        if (e != null) {
+          if (entryActions != null) showEntry(e, filesRoot, state, lastScanId, entryActions)
+          return@setAdapter
+        }
+        val r = item.record!!
         // v0.4 (S7): a fourth action next to Find, Rename and Delete, as a button in the body.
         var itemDialog: AlertDialog? = null
         val updateRow =
@@ -642,6 +737,122 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
             .show()
       }
       .setNegativeButton("Close", null)
+      .show()
+      // The search field is in the custom title, which the dialog does not count as text input:
+      // without this the soft keyboard would never open for it.
+      .window
+      ?.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM)
+  }
+
+  /**
+   * Second line of a scanned entry: location and evidence, "Bedroom · seen 2 d ago", "Kitchen ·
+   * looked for in the last scan, not seen" or "Office · not checked since Nov 17".
+   */
+  private fun entryLine(e: InventoryEntry, state: Localizer.State?, lastScanId: String?): String {
+    val inMap = state?.map?.mapId != null && e.mapId == state.map.mapId
+    return InventoryText.location(e, state?.roomName(e.roomId), inMap) + " · " +
+      InventoryText.evidence(e, System.currentTimeMillis(), lastScanId)
+  }
+
+  /** A scanned entry: Find, Rename or Delete. Back or a tap outside changes nothing. */
+  private fun showEntry(e: InventoryEntry, filesRoot: File, state: Localizer.State?, lastScanId: String?, actions: EntryActions) {
+    val box =
+      LinearLayout(activity).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(20), dp(8), dp(20), 0)
+        BitmapFactory.decodeFile(File(filesRoot, e.cropFile).path)?.let { bmp ->
+          addView(
+            ImageView(activity).apply {
+              setImageBitmap(bmp)
+              adjustViewBounds = true
+              maxHeight = dp(180)
+            }
+          )
+        }
+        addView(
+          TextView(activity).apply {
+            textSize = 14f
+            setPadding(0, dp(8), 0, 0)
+            text =
+              entryLine(e, state, lastScanId) + "\n" +
+                "Detected as " + e.label + " · " + e.sightingCount + " sightings · first seen " + InventoryText.day(e.firstSeenMs) +
+                (if (e.nameEdited) "" else "\nThe name is the detector's label until you rename it.") +
+                "\nThe location is historical until verified."
+          }
+        )
+      }
+    AlertDialog.Builder(activity)
+      .setTitle(e.name)
+      .setView(box)
+      .setPositiveButton("Find") { _, _ -> actions.onFind(e) }
+      .setNeutralButton("Delete") { _, _ ->
+        AlertDialog.Builder(activity)
+          .setTitle("Delete \"" + e.name + "\"?")
+          .setMessage("This removes the scanned item from the list. Its photo and logs are kept for analysis.")
+          .setPositiveButton("Delete") { _, _ -> actions.onDelete(e) }
+          .setNegativeButton("Cancel", null)
+          .show()
+      }
+      .setNegativeButton("Rename") { _, _ -> showRenameEntry(e, actions) }
+      .show()
+  }
+
+  private fun showRenameEntry(e: InventoryEntry, actions: EntryActions) {
+    val edit =
+      EditText(activity).apply {
+        setText(e.name)
+        setSingleLine()
+        selectAll()
+      }
+    val box = LinearLayout(activity).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(edit) }
+    AlertDialog.Builder(activity)
+      .setTitle("Rename")
+      .setView(box)
+      .setPositiveButton("Save") { _, _ ->
+        val n = edit.text.toString().trim()
+        if (n.isNotEmpty() && n != e.name) actions.onRename(e, n)
+      }
+      .setNegativeButton("Cancel", null)
+      .show()
+  }
+
+  /** v0.5: Scan when idle and located, Stop during a scan, else hidden. */
+  fun setScanControl(c: ScanControl) {
+    when (c) {
+      ScanControl.HIDDEN -> scanButton.visibility = View.GONE
+      ScanControl.START -> {
+        scanButton.text = "Scan"
+        scanButton.visibility = View.VISIBLE
+      }
+      ScanControl.STOP -> {
+        scanButton.text = "Stop"
+        scanButton.visibility = View.VISIBLE
+      }
+    }
+  }
+
+  /** v0.5: the counts of a finished scan. [onItems] opens the Items list. */
+  fun showScanSummary(end: ScanEnd, onItems: () -> Unit) {
+    val s = end.summary
+    val text = StringBuilder()
+    if (s == null) {
+      text.append("The scan could not be summarised").append(end.error?.let { ": $it" } ?: "").append(".\n")
+    } else {
+      text.append("New items: ").append(s.newCount).append('\n')
+      text.append("Seen again: ").append(s.seenAgain).append('\n')
+      text.append("Looked for, not seen: ").append(s.missed).append('\n')
+      text.append("Not observed: ").append(s.notObserved).append('\n')
+      text.append("Seen in one keyframe only (dropped): ").append(s.tentativeDropped).append('\n')
+    }
+    text.append('\n')
+    text.append(end.keyframes).append(" keyframes · ").append("%.0f m walked · %.0f s".format(end.metersWalked, end.durationMs / 1000.0))
+    end.depthCheckMedianM?.let { text.append("\nDepth check: median %.1f cm over %d keyframes".format(it * 100, end.depthChecks)) }
+    if (end.reason == "paused") text.append("\n\nThe scan ended because the app left the screen.")
+    AlertDialog.Builder(activity)
+      .setTitle("Scan finished")
+      .setMessage(text.toString())
+      .setPositiveButton("OK", null)
+      .setNeutralButton("Items") { _, _ -> onItems() }
       .show()
   }
 

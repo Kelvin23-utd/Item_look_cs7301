@@ -174,6 +174,10 @@ class Localizer(
   val located: Boolean
     get() = tWM != null
 
+  /** A spot lock or capture is collecting frames (v0.5: scan keyframes wait meanwhile). */
+  val lockActive: Boolean
+    get() = lockMode != null
+
   val currentMapId: String?
     get() = mapId
 

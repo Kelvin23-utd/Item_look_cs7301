@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.text.InputFilter
 import android.text.InputType
 import android.view.View
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -129,6 +130,12 @@ class LocationDialogs(
       modeGroup.addView(button)
       if (mode == activity.captureMode) modeGroup.check(button.id)
     }
+    // v0.5 (plan section 8): read when a scan starts; logged as `scan_start.saveFrames`.
+    val saveFrames =
+      CheckBox(activity).apply {
+        text = "Save scan frames (image, depth and detections of every scan keyframe)"
+        isChecked = activity.scanSaveFrames
+      }
     val box =
       LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
@@ -150,11 +157,20 @@ class LocationDialogs(
           }
         )
         addView(modeGroup)
+        addView(
+          TextView(activity).apply {
+            textSize = 13f
+            setPadding(0, dp(12), 0, 0)
+            text = "Scan mode"
+          }
+        )
+        addView(saveFrames)
       }
     AlertDialog.Builder(activity)
       .setTitle("Study settings")
       .setView(box)
       .setPositiveButton("Save") { _, _ ->
+        if (saveFrames.isChecked != activity.scanSaveFrames) activity.setScanSaveFrames(saveFrames.isChecked)
         if (renderer.query != null) {
           main.toast("A search started meanwhile: study settings not changed.")
         } else {

@@ -48,6 +48,19 @@ import edu.cs6301.findback.policy.PositionSource
 import edu.cs6301.findback.policy.VerificationPolicy
 import edu.cs6301.findback.render.LabelRender
 import edu.cs6301.findback.render.PointCloudRender
+import edu.cs6301.findback.scan.ActiveScan
+import edu.cs6301.findback.scan.Affine2
+import edu.cs6301.findback.scan.CameraPose
+import edu.cs6301.findback.scan.CapturedKeyframe
+import edu.cs6301.findback.scan.DepthMap
+import edu.cs6301.findback.scan.HitSample
+import edu.cs6301.findback.scan.InventoryEntry
+import edu.cs6301.findback.scan.Intrinsics
+import edu.cs6301.findback.scan.OverlayBox
+import edu.cs6301.findback.scan.ScanConfig
+import edu.cs6301.findback.scan.ScanController
+import edu.cs6301.findback.scan.ScanEnd
+import edu.cs6301.findback.ml.YuvPlanes
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.CaptureRules
 import edu.cs6301.findback.study.GroundTruth
@@ -106,6 +119,12 @@ class RegistrationDraft(
 /** A camera-view tap on its way to the GL thread, with the "Update location" target at tap time. */
 class PendingTap(val point: PointF, val updateOf: ObjectRecord?)
 
+/**
+ * Items → Find, on its way to the GL thread. v0.5: [source] is "tap" for a tapped record and
+ * "scan" for a scanned entry, whose record [InventoryEntry.toObjectRecord] built.
+ */
+class QueryRequest(val record: ObjectRecord, val source: String, val inventoryId: String?)
+
 /** One "find my item" query, from selecting the item to answering the ground-truth prompt. */
 class Query(
   val id: String,
@@ -118,7 +137,16 @@ class Query(
   val captureMode: CaptureMode = CaptureMode.FREE,
   /** Query start on the monotonic clock (SystemClock.elapsedRealtime), for the v0.4 timing fields. */
   val startElapsedMs: Long = 0L,
+  /** v0.5: "tap" (a tapped record) or "scan" (a scanned entry). */
+  val source: String = SOURCE_TAP,
+  /** v0.5: the inventory entry the record was built from, or null for a tapped record. */
+  val inventoryId: String? = null,
 ) {
+  companion object {
+    const val SOURCE_TAP = "tap"
+    const val SOURCE_SCAN = "scan"
+  }
+
   /** Capture attempts started (an attempt that fails before its `verify` event still counts). */
   @Volatile var verifications = 0
   @Volatile var lastOutcome: String? = null
@@ -147,6 +175,8 @@ class Query(
   var resolvableAtDone = false
   /** `query_end` was logged; a late second answer is ignored. */
   var ended = false
+  /** v0.5: a confirmed capture already counted as `seen` for the scanned entry (once per query). */
+  @Volatile var inventorySeen = false
 
   // Guidance, updated on the GL thread about 5 times a second; read by the UI at the end.
   @Volatile var mode: GuidanceMode? = null
@@ -222,7 +252,7 @@ class FindBackRenderer(private val activity: MainActivity) :
   private val pendingTap = AtomicReference<PendingTap?>(null)
   @Volatile private var pendingVerify = false
   @Volatile private var mlBusy = false
-  private val pendingQuery = AtomicReference<ObjectRecord?>(null)
+  private val pendingQuery = AtomicReference<QueryRequest?>(null)
   private val glCommands = ConcurrentLinkedQueue<() -> Unit>()
   @Volatile var query: Query? = null
     private set
@@ -296,6 +326,20 @@ class FindBackRenderer(private val activity: MainActivity) :
       override fun toast(message: String) = view.post { view.toast(message) }
     }
 
+  /** v0.5 scan mode. Unused (and idle on every thread) until the user starts a scan. */
+  val scan: ScanController
+
+  private val scanUi =
+    object : ScanController.Ui {
+      override fun scanStarted(scan: ActiveScan) = view.post { onScanStarted(scan) }
+
+      override fun overlay(boxes: List<OverlayBox>) = view.post { onScanOverlay(boxes) }
+
+      override fun scanEnded(end: ScanEnd) = view.post { onScanEnded(end) }
+
+      override fun toast(message: String) = view.post { view.toast(message) }
+    }
+
   init {
     localizer =
       Localizer(
@@ -307,6 +351,7 @@ class FindBackRenderer(private val activity: MainActivity) :
         ui = locUi,
         loaded = activity.loadedMap,
       )
+    scan = ScanController(activity, activity.events, activity.inventory, activity.store, activity.sessionId, { embedder }, scanUi)
     scope.launch(Dispatchers.Default) {
       val t0 = SystemClock.elapsedRealtimeNanos()
       try {
@@ -329,8 +374,17 @@ class FindBackRenderer(private val activity: MainActivity) :
 
   fun bindView(view: MainView) {
     this.view = view
-    view.itemsButton.setOnClickListener {
-      view.showItems(
+    view.itemsButton.setOnClickListener { showItems() }
+    view.verifyButton.setOnClickListener { pendingVerify = true }
+    view.doneButton.setOnClickListener { onDonePressed() }
+    // v0.5: Scan when idle and located, Stop during a scan.
+    view.scanButton.setOnClickListener { if (scan.active != null) requestStopScan() else requestStartScan() }
+  }
+
+  /** UI thread: the Items list, tapped records and (v0.5) scanned entries together. */
+  private fun showItems() {
+    if (scan.active != null) return view.toast("Stop the scan first.")
+    view.showItems(
         store.snapshot().sortedByDescending { it.lastSeenMs },
         store.root,
         uiState,
@@ -344,11 +398,32 @@ class FindBackRenderer(private val activity: MainActivity) :
           sessionAnchors.remove(rec.id)?.let { anchorsToDetach.add(it) }
           store.delete(rec.id)
           events.log("delete", mapOf("record" to rec.id, "name" to rec.name))
-        }
+        },
+        entries = scan.inventory.snapshot(),
+        lastScanId = scan.inventory.lastScanId,
+        entryActions =
+          MainView.EntryActions(
+            onFind = { e -> startQuery(e.toObjectRecord(), Query.SOURCE_SCAN, e.id) },
+            onRename = { e, name -> renameEntry(e, name) },
+            onDelete = { e -> deleteEntry(e) },
+          ),
       )
+  }
+
+  /** UI thread → IO: a scanned entry's new name; it no longer follows the detector's label. */
+  private fun renameEntry(e: InventoryEntry, name: String) {
+    scope.launch(Dispatchers.IO) {
+      val renamed = scan.inventory.rename(e.id, name) ?: return@launch
+      events.log("inv_rename", mapOf("inventoryId" to e.id, "from" to e.name, "to" to name, "entry" to renamed.toJson(withEmbedding = false)))
     }
-    view.verifyButton.setOnClickListener { pendingVerify = true }
-    view.doneButton.setOnClickListener { onDonePressed() }
+  }
+
+  /** UI thread → IO: remove a scanned entry from the list. Its photo and log lines stay. */
+  private fun deleteEntry(e: InventoryEntry) {
+    scope.launch(Dispatchers.IO) {
+      val removed = scan.inventory.delete(e.id) ?: return@launch
+      events.log("inv_delete", mapOf("inventoryId" to e.id, "name" to removed.name, "entry" to removed.toJson(withEmbedding = false)))
+    }
   }
 
   /** UI thread. Done is "Cancel" during "Update location" and "Skip" during a measurement. */
@@ -389,12 +464,15 @@ class FindBackRenderer(private val activity: MainActivity) :
 
   override fun onPause(owner: LifecycleOwner) {
     displayRotationHelper.onPause()
+    // v0.5: a scan ends when the app leaves the screen; its keyframes so far are kept.
+    scan.stop("paused")
     // The GL thread is already paused (MainView pauses the surface first): save the latest map.
     activity.mapStore.flush()
   }
 
   override fun onDestroy(owner: LifecycleOwner) {
     activity.mapStore.close()
+    scan.close()
     scope.cancel()
     detector.close()
     embedder?.close()
@@ -409,6 +487,11 @@ class FindBackRenderer(private val activity: MainActivity) :
     val q = query
     if (q != null && !q.measuring) {
       view.toast("Press Done to finish this search before registering new items.")
+      return
+    }
+    // v0.5: registration taps are ignored during a scan (plan section 8).
+    if (scan.active != null) {
+      view.toast("Scanning: taps do not register items. Press Stop first.")
       return
     }
     pendingTap.set(PendingTap(PointF(x, y), updateTarget))
@@ -479,12 +562,13 @@ class FindBackRenderer(private val activity: MainActivity) :
   // ---------------------------------------------------------------- query lifecycle
 
   /** UI thread: the query starts on the GL thread, where the map and guidance state live. */
-  private fun startQuery(rec: ObjectRecord) {
-    pendingQuery.set(rec)
+  private fun startQuery(rec: ObjectRecord, source: String = Query.SOURCE_TAP, inventoryId: String? = null) {
+    pendingQuery.set(QueryRequest(rec, source, inventoryId))
   }
 
   /** GL thread. */
-  private fun startQueryGl(rec: ObjectRecord, camera: Camera) {
+  private fun startQueryGl(req: QueryRequest, camera: Camera) {
+    val rec = req.record
     val nowMs = SystemClock.elapsedRealtime()
     val wallMs = System.currentTimeMillis()
     val proxies = localizer.proxies(nowMs)
@@ -510,6 +594,8 @@ class FindBackRenderer(private val activity: MainActivity) :
         studyTag = activity.studyTag,
         captureMode = activity.captureMode,
         startElapsedMs = nowMs,
+        source = req.source,
+        inventoryId = req.inventoryId,
       )
     guard("guidance") { updateGuidance(q, camera, nowMs) }
     q.resolvable = resolve(rec) != null
@@ -547,6 +633,9 @@ class FindBackRenderer(private val activity: MainActivity) :
         "lineageAgeMin" to Lineage.ageMinutes(rec, wallMs),
         "studyTag" to q.studyTag,
         "captureMode" to q.captureMode.name,
+        // v0.5
+        "source" to q.source,
+        "inventoryId" to q.inventoryId,
       ) + localizer.proxyFields(nowMs)
     )
     val roomName = localizer.roomName(q.itemRoom)
@@ -653,10 +742,13 @@ class FindBackRenderer(private val activity: MainActivity) :
       handleTap(frame, camera, session)
       handleVerify(frame, camera, session)
       guard("ghost") { captureGhostIfRequested(frame, session) }
+      // v0.5: scan keyframes, only while a scan runs, after taps and captures had their turn.
+      scan.active?.let { a -> guard("scan") { scanTick(a, frame, camera, session, nowMs) } }
       query?.let { q -> guard("guidance") { updateGuidance(q, camera, nowMs, throttle = true) } }
       drawLabels(render, camera)
       updateOverlay(camera)
     } else {
+      scan.active?.lastCameraPos = null // no walking across a tracking gap
       pendingTap.set(null)
       hideOverlay()
       if (pendingVerify) {
@@ -778,6 +870,7 @@ class FindBackRenderer(private val activity: MainActivity) :
       if (q.measuring) handleMeasureTap(frame, q, tap.point)
       return
     }
+    if (scan.active != null) return // v0.5: a scan started after this tap was made
     // v0.4 "Update location": a tap made in that mode replaces the record it was made for.
     val updateOf = tap.updateOf
     if (updateOf != null && updateTarget !== updateOf) return // cancelled before the tap arrived
@@ -1246,6 +1339,12 @@ class FindBackRenderer(private val activity: MainActivity) :
         )
         if (q.msToFirstVerify == null) q.msToFirstVerify = msSinceQueryStart
         q.captures++ // only this capture writes it: mlBusy admits one capture at a time
+        // v0.5: for a scanned entry, a confirmed capture is evidence that it is still there.
+        val inventoryId = q.inventoryId
+        if (confirmed && inventoryId != null && !q.inventorySeen) {
+          q.inventorySeen = true
+          scan.onVerifiedSeen(inventoryId, q.id, attempt, similarity)
+        }
         val storedThumb = store.loadBitmap(rec.cropFile)
         withContext(Dispatchers.Main) {
           if (query === q) {
@@ -1304,6 +1403,178 @@ class FindBackRenderer(private val activity: MainActivity) :
         )
       )
     }
+  }
+
+  // ---------------------------------------------------------------- scan mode (v0.5)
+
+  /** UI thread: Scan pressed. The scan starts on the GL thread, where the map state lives. */
+  fun requestStartScan() = runOnGl { guard("scan_start") { startScanGl() } }
+
+  /** UI thread: Stop pressed. */
+  fun requestStopScan() = scan.stop("stop")
+
+  /** GL thread. A scan needs a located map and an idle app (no search, update, lock or capture). */
+  private fun startScanGl() {
+    val why =
+      when {
+        scan.active != null -> return
+        cameraTracking != TrackingState.TRACKING -> "Move the phone slowly until tracking resumes, then press Scan."
+        localizer.tWM == null || localizer.currentMapId == null -> "Locate first (picture or spot), then press Scan."
+        query != null -> "Finish this search (Done) before scanning."
+        updateTarget != null -> "Finish \"Update location\" before scanning."
+        localizer.lockActive -> "Finish the spot lock before scanning."
+        mlBusy -> "Still processing the previous capture…"
+        embedder == null -> "Model still loading…"
+        else -> null
+      }
+    if (why != null) return view.post { view.toast(why) }
+    scan.start(
+      localizer.currentMapId!!,
+      activity.studyTag,
+      activity.captureMode.name,
+      activity.scanSaveFrames,
+      userRoom(),
+      localizer.proxyFields(SystemClock.elapsedRealtime()),
+    )
+  }
+
+  /** GL thread, every tracking frame of a scan: pace keyframes and capture one when due. */
+  private fun scanTick(a: ActiveScan, frame: Frame, camera: Camera, session: Session, nowMs: Long) {
+    val p = camera.pose
+    val pose = CameraPose.of(p.translation, p.rotationQuaternion)
+    a.trackWalk(pose.position)
+    // Taps, verification captures, ghost captures and spot locks always go first.
+    val busy =
+      scan.inFlight.get() || mlBusy || ghostCaptureRequested || pendingTap.get() != null || pendingVerify ||
+        localizer.lockActive || query != null || updateTarget != null
+    val located = localizer.tWM != null
+    scan.pacer.onFrame(nowMs, pose, scanning = located, passiveAllowed = false, busy = busy) ?: return
+    captureKeyframe(a, frame, camera, session, pose, nowMs)
+  }
+
+  /**
+   * GL thread (plan section 4): copy out the depth image and the CPU image and close both at
+   * once, with the pose, intrinsics, rotation, map transform, room and the image-to-depth and
+   * image-to-view mappings (three points through `transformCoordinates2d`). No depth: no keyframe.
+   */
+  private fun captureKeyframe(a: ActiveScan, frame: Frame, camera: Camera, session: Session, pose: CameraPose, nowMs: Long) {
+    val t0 = SystemClock.elapsedRealtimeNanos()
+    val tWM = localizer.tWM ?: return
+    val depthImage =
+      try {
+        frame.acquireDepthImage16Bits()
+      } catch (e: Exception) {
+        null // not available yet (or depth unsupported)
+      }
+    if (depthImage == null) {
+      a.skippedNoDepth++
+      scan.pacer.failed(nowMs)
+      return
+    }
+    val (dw, dh, mm) = try { ScanController.copyDepth(depthImage) } finally { depthImage.close() }
+    val image =
+      try {
+        frame.acquireCameraImage()
+      } catch (e: Exception) {
+        null
+      }
+    if (image == null) {
+      a.skippedNoImage++
+      scan.pacer.failed(nowMs)
+      return
+    }
+    val yuv = try { YuvPlanes.copy(image) } finally { image.close() }
+    val w = yuv.width.toFloat()
+    val h = yuv.height.toFloat()
+    val corners = floatArrayOf(0f, 0f, w, 0f, 0f, h)
+    val src = DoubleArray(6) { corners[it].toDouble() }
+    val tex = FloatArray(6)
+    frame.transformCoordinates2d(Coordinates2d.IMAGE_PIXELS, corners, Coordinates2d.TEXTURE_NORMALIZED, tex)
+    // Depth pixel = texture-normalized coordinate × depth image size (ARCore depth guide).
+    val toDepth = Affine2.fromThreePoints(src, DoubleArray(6) { tex[it].toDouble() * if (it % 2 == 0) dw else dh })
+    if (toDepth == null) {
+      scan.pacer.failed(nowMs)
+      return
+    }
+    val viewPts = FloatArray(6)
+    frame.transformCoordinates2d(Coordinates2d.IMAGE_PIXELS, corners, Coordinates2d.VIEW, viewPts)
+    val toView = Affine2.fromThreePoints(src, DoubleArray(6) { viewPts[it].toDouble() })
+    val ki = camera.imageIntrinsics
+    val f = ki.focalLength
+    val c = ki.principalPoint
+    val dims = ki.imageDimensions
+    val intrinsics =
+      Intrinsics(f[0].toDouble(), f[1].toDouble(), c[0].toDouble(), c[1].toDouble(), dims[0], dims[1]).scaledTo(yuv.width, yuv.height)
+    val index = a.nextIndex++
+    val hits = if (index < ScanConfig.SELF_CHECK_KEYFRAMES) selfCheckHits(frame, yuv.width, yuv.height) else emptyList()
+    val rotation = displayRotationHelper.getCameraSensorToDisplayRotation(session.cameraConfig.cameraId)
+    scan.pacer.taken(nowMs, pose)
+    a.lastKeyframeElapsedMs = nowMs
+    scan.submit(
+      CapturedKeyframe(
+        scan = a,
+        index = index,
+        tMs = System.currentTimeMillis(),
+        elapsedMs = nowMs,
+        yuv = yuv,
+        rotation = rotation,
+        intrinsics = intrinsics,
+        pose = pose,
+        mapToWorld = tWM,
+        roomId = userRoom(),
+        depth = DepthMap(dw, dh, mm, toDepth),
+        imageToView = toView,
+        hits = hits,
+        glMs = msSince(t0),
+      )
+    )
+  }
+
+  /**
+   * Self-check (plan section 5): hit-test the screen point of the image centre, and of one
+   * off-centre point, in this frame. The worker compares them with its own points.
+   */
+  private fun selfCheckHits(frame: Frame, w: Int, h: Int): List<HitSample> {
+    val points =
+      listOf(
+        "centre" to (w / 2.0 to h / 2.0),
+        "offCentre" to (ScanConfig.SELF_CHECK_OFF_CENTRE_U * w.toDouble() to ScanConfig.SELF_CHECK_OFF_CENTRE_V * h.toDouble()),
+      )
+    return points.map { (name, uv) ->
+      val (u, v) = uv
+      val view = FloatArray(2)
+      frame.transformCoordinates2d(Coordinates2d.IMAGE_PIXELS, floatArrayOf(u.toFloat(), v.toFloat()), Coordinates2d.VIEW, view)
+      if (view[0] < 0f || view[1] < 0f || view[0] > viewWidth || view[1] > viewHeight) {
+        HitSample(name, u, v, null, "outside_view")
+      } else {
+        val hit = bestHit(frame, view[0], view[1])
+        HitSample(name, u, v, hit?.let { Vec3.of(it.hitPose.translation) }, hit?.trackable?.javaClass?.simpleName ?: "none")
+      }
+    }
+  }
+
+  /** UI thread: Items is off during a scan (a search, rename or delete waits for Stop). */
+  private fun onScanStarted(a: ActiveScan) {
+    if (scan.active !== a) return // already stopped again
+    view.itemsButton.isEnabled = false
+    view.setScanControl(MainView.ScanControl.STOP)
+    view.toast("Scan started: walk slowly and look at the things around you. Stop when done.")
+  }
+
+  /** UI thread: the boxes of the latest keyframe. */
+  private fun onScanOverlay(boxes: List<OverlayBox>) {
+    view.scanOverlay.setBoxes(if (scan.active != null) boxes else emptyList())
+  }
+
+  /** UI thread. */
+  private fun onScanEnded(end: ScanEnd) {
+    view.scanOverlay.setBoxes(emptyList())
+    if (scan.active == null) {
+      if (query == null && updateTarget == null) view.itemsButton.isEnabled = true
+      view.setScanControl(MainView.ScanControl.HIDDEN) // the next status update offers Scan again
+    }
+    if (activity.isFinishing || activity.isDestroyed) return
+    view.showScanSummary(end) { if (scan.active == null) showItems() }
   }
 
   // ---------------------------------------------------------------- spots
@@ -1503,6 +1774,7 @@ class FindBackRenderer(private val activity: MainActivity) :
     val items = store.snapshot().size
     val located = q?.let { resolve(it.record) }
     val itemRoomName = q?.let { localizer.roomName(it.itemRoom) }
+    val scanning = scan.active
     val hint =
       when {
         mlBusy -> "Analyzing…"
@@ -1520,6 +1792,7 @@ class FindBackRenderer(private val activity: MainActivity) :
           }
         st.lockActive -> "Hold still…"
         !tracking -> "Move the phone slowly to resume tracking"
+        scanning != null -> scanHint(scanning, st.located, now)
         upd != null -> "Update location: tap \"${upd.name}\" where it is now, or press Cancel"
         !st.hasMap && st.setHomeDeclined -> "No home map yet: tap here → Set home here with a spot (or restart to use the picture)"
         !st.hasMap ->
@@ -1577,10 +1850,32 @@ class FindBackRenderer(private val activity: MainActivity) :
     val near = q?.mode == GuidanceMode.NEAR
     val studyLine = StudySettings.statusLine(activity.studyTag, activity.captureMode)
 
+    // v0.5: Scan is offered when idle and located; Stop shows for as long as a scan runs.
+    val scanIdleOk = st.located && q == null && upd == null && !st.lockActive
     view.post {
+      view.setScanControl(
+        when {
+          scan.active != null -> MainView.ScanControl.STOP
+          scanIdleOk && query == null && updateTarget == null -> MainView.ScanControl.START
+          else -> MainView.ScanControl.HIDDEN
+        }
+      )
       view.renderStatus(tracking, trackingDetail, locState, locLine, items, hint, roomChip, studyLine)
       if (cue != null && query === q) view.setGuideCue(cue, located != null, near)
       view.miniMap.setData(mini)
+    }
+  }
+
+  /** v0.5: the status hint during a scan ("Scanning: 14 items · walk slowly"). */
+  private fun scanHint(a: ActiveScan, located: Boolean, nowMs: Long): String {
+    val n = a.itemCount
+    val items = if (n == 1) "1 item" else "$n items"
+    return when {
+      !located -> "Scanning paused: not located. Look at the picture or tap here → Use a spot"
+      localizer.lockActive -> "Scanning: $items · paused for the spot lock"
+      nowMs - a.lastKeyframeElapsedMs > ScanConfig.NO_KEYFRAME_HINT_MS ->
+        "Scanning: $items · waiting for depth: move the phone sideways"
+      else -> "Scanning: $items · walk slowly"
     }
   }
 

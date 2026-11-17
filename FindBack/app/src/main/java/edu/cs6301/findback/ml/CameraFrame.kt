@@ -93,21 +93,57 @@ class CameraFrame(val sensor: Bitmap, val rotation: Int) {
   }
 }
 
+/**
+ * The three planes of a YUV_420_888 image copied out of the [Image], so the image can be closed at
+ * once (v0.5 scan keyframes copy on the GL thread and convert later on a worker).
+ */
+class YuvPlanes(
+  val width: Int,
+  val height: Int,
+  val y: ByteArray,
+  val u: ByteArray,
+  val v: ByteArray,
+  val yRowStride: Int,
+  val yPixelStride: Int,
+  /** Row and pixel stride of the U plane, used for V too (as before v0.5). */
+  val uvRowStride: Int,
+  val uvPixelStride: Int,
+) {
+  companion object {
+    fun copy(image: Image): YuvPlanes {
+      val yPlane = image.planes[0]
+      val uPlane = image.planes[1]
+      val vPlane = image.planes[2]
+      return YuvPlanes(
+        image.width,
+        image.height,
+        yPlane.buffer.duplicate().let { b -> ByteArray(b.remaining()).also { b.get(it) } },
+        uPlane.buffer.duplicate().let { b -> ByteArray(b.remaining()).also { b.get(it) } },
+        vPlane.buffer.duplicate().let { b -> ByteArray(b.remaining()).also { b.get(it) } },
+        yPlane.rowStride,
+        yPlane.pixelStride,
+        uPlane.rowStride,
+        uPlane.pixelStride,
+      )
+    }
+  }
+}
+
 /** Plain-Kotlin YUV_420_888 to ARGB conversion (replaces the deprecated RenderScript path). */
 object YuvConverter {
-  fun toBitmap(image: Image): Bitmap {
-    val w = image.width
-    val h = image.height
-    val yPlane = image.planes[0]
-    val uPlane = image.planes[1]
-    val vPlane = image.planes[2]
-    val yBytes = yPlane.buffer.duplicate().let { b -> ByteArray(b.remaining()).also { b.get(it) } }
-    val uBytes = uPlane.buffer.duplicate().let { b -> ByteArray(b.remaining()).also { b.get(it) } }
-    val vBytes = vPlane.buffer.duplicate().let { b -> ByteArray(b.remaining()).also { b.get(it) } }
-    val yRow = yPlane.rowStride
-    val yPix = yPlane.pixelStride
-    val uvRow = uPlane.rowStride
-    val uvPix = uPlane.pixelStride
+  fun toBitmap(image: Image): Bitmap = toBitmap(YuvPlanes.copy(image))
+
+  /** The conversion itself, on planes already copied out of the image. */
+  fun toBitmap(p: YuvPlanes): Bitmap {
+    val w = p.width
+    val h = p.height
+    val yBytes = p.y
+    val uBytes = p.u
+    val vBytes = p.v
+    val yRow = p.yRowStride
+    val yPix = p.yPixelStride
+    val uvRow = p.uvRowStride
+    val uvPix = p.uvPixelStride
 
     val argb = IntArray(w * h)
     for (j in 0 until h) {
