@@ -187,6 +187,45 @@ Time is taken from the pose rows (10 Hz while the app is resumed): the interval 
 
 Writes two fake data folders and fake power runs to the system temp directory (or `--out`). It refuses to write under `paper/`, `findback_data/`, `backups/` or `FindBack/`, or over a folder that holds an `events.jsonl` it did not write. Its output exercises every code path: all five ground truths, the three capture modes, benchmark labels and conditions, embedding files, record history, map fixes, both splits and an experiment without splits, two sites. `--variant minimal` writes v0.3-shaped events with only a study tag. Nothing it writes is a measurement.
 
+## Offline baselines (bench_*.py)
+
+Tracks A and B of `BASELINES_PLAN.md`: every method sees the same frames and crops the phone saved, on this Mac, offline. The design (pair sets, methods, operating points, metrics) is fixed in `notes/2026-11-17_baselines_design.md`, with a list of every change made after results were seen; methods, citations, weight versions and licences are in `notes/2026-11-17_methods.md`. Nothing is uploaded: the scripts put the Hugging Face libraries in offline mode and keep Ultralytics' usage analytics off through a private settings folder.
+
+One-time setup (a dedicated environment and the weights, about 2 GB in `analysis/.bench-cache/`; both folders are git-ignored):
+
+```bash
+uv venv --python 3.12.12 --python-preference only-managed analysis/.venv-bench
+uv pip install --python analysis/.venv-bench/bin/python -r analysis/requirements-bench.txt
+analysis/.venv-bench/bin/python analysis/bench_fetch_weights.py     # downloads once, checks sha256
+```
+
+On a pull (one or more `--data` folders; developer test sessions of the session log are left out unless `--no-default-exclude`):
+
+```bash
+PY=analysis/.venv-bench/bin/python
+D=backups/phone_files_2026-11-17_0008          # the new pull
+# Track A: appearance matching, about 4 minutes. Table to stdout, analysis/out/bench_match/, and --md
+$PY analysis/bench_match.py --data $D --md analysis/notes/<date>_track_a_results.md
+# Track B: detectors on the scan keyframes, about 3 minutes. Label-free numbers and the judging sheet
+$PY analysis/bench_detect.py --data $D --md analysis/notes/<date>_track_b_label_free.md
+# Track B: after a person has filled analysis/out/judge/judge_sheet.html and pressed "Download judgments"
+python3 analysis/bench_judge_read.py ~/Downloads/judgments_<sheet>.json --md analysis/notes/<date>_track_b_judged.md
+# Tests (no weights or data needed, under a second)
+$PY analysis/test_bench.py
+```
+
+| Script | What it does |
+| --- | --- |
+| `bench_common.py` | Loads a pull (events, records, inventory, scan keyframes), cuts crops exactly as the app does (sensor rectangle, clamp, truncate, rotate upright), builds the four pair sets (verify, verify with impostors, scan, cross; with and without possible duplicates), weighted ROC AUC, EER and TAR at 5% FAR, and the item bootstrap |
+| `bench_match.py` | Track A. Checks first that the offline app embedder reproduces the logged similarities, then scores every pair with every method (best over the phone's candidate rectangles for a fresh capture). `--methods` picks a subset |
+| `bench_detect.py` | Track B. Runs the detectors on the saved half-size keyframes, applies the app's keyframe filter to each, reports label-free numbers and EfficientDet-Lite0's agreement with the phone's own detections, writes `analysis/out/judge/judge_sheet.html` (detectors hidden, names shuffled) and `judge_key.json`. `--detectors` picks a subset; a detector that fails to load is dropped and named in the report |
+| `bench_judge_read.py` | Reads the downloaded judgments with the key: item precision, naming precision (strict and lenient) and pooled relative recall per detector, over complete frames only. Standard library only |
+| `bench_vocab_household.txt` | The fixed vocabulary of the open-vocabulary detectors (items and a stop section) |
+| `bench_fetch_weights.py` | Downloads and checks the weights |
+| `test_bench.py` | Crop geometry against the app's rules, pair construction on a hand-built pull (labels, impostors, duplicates, excluded sessions, tentative and unsaved detections), every metric against brute force or a hand-worked case, the item bootstrap, the keyframe filter rule by rule, the depth median, box mapping, vocabulary parsing, that the judging sheet hides detectors, and the judgment reader by hand |
+
+The judging sheet embeds keyframes, so it and every other output stay in `analysis/out/` (git-ignored); `pair_scores.csv` names crops by key only. Only number tables go to `analysis/notes/`.
+
 ## Session log
 
 | Session | Date | What | Use in study |

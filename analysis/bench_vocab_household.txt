@@ -1,0 +1,191 @@
+# Household vocabulary for the open-vocabulary detectors of analysis/bench_detect.py (Track B).
+#
+# Written 2026-11-17, before any open-vocabulary detector was run on FindBack data, and fixed
+# from then on (analysis/BASELINES_PLAN.md: "a fixed household vocabulary written down before
+# running"). Its author had read analysis/notes/2026-11-16_first_scan_walk.md, which mentions a
+# paper towel roll, a yellow bag, a snack bag, bottles and plush toys in the scanned room; the
+# list was written as a generic household list and was not edited after looking at any keyframe.
+#
+# Format: one name per line, used verbatim as the prompt (YOLOE: the plain name; OWLv2:
+# "a photo of a <name>"). Lines starting with '#' are comments. A section header
+# "[items]" or "[stop]" sets the role of the names below it:
+#   items  things a person could put down and look for later; what the inventory should list
+#   stop   furniture, fixtures and people. They are prompted too, so that a sofa is not forced
+#          into the nearest item name, and are then dropped exactly like the app's stop list
+#          (person, couch, bed, dining table, toilet, tv, refrigerator, oven, sink, chair,
+#          bench, potted plant).
+# Duplicates are not allowed (checked by bench_detect.py).
+
+[items]
+# kitchen and food
+cup
+mug
+glass
+bottle
+water bottle
+wine bottle
+can
+jar
+bowl
+plate
+pot
+pan
+kettle
+teapot
+cutting board
+knife
+fork
+spoon
+chopsticks
+spatula
+ladle
+food container
+lunch box
+thermos
+coffee maker
+toaster
+microwave
+rice cooker
+blender
+dish soap
+sponge
+paper towel roll
+aluminum foil
+salt shaker
+spice jar
+sauce bottle
+cereal box
+snack bag
+bread
+apple
+banana
+orange
+egg carton
+tea box
+trash can
+dish rack
+# electronics
+laptop
+keyboard
+computer mouse
+computer monitor
+tablet
+cell phone
+phone charger
+charging cable
+power bank
+headphones
+earbuds case
+speaker
+remote control
+game controller
+camera
+calculator
+battery
+extension cord
+router
+desk lamp
+electric fan
+# desk and paper
+book
+notebook
+paper
+folder
+envelope
+pen
+pencil
+marker
+scissors
+tape
+stapler
+sticky notes
+ruler
+# personal
+wallet
+keys
+glasses
+sunglasses
+glasses case
+watch
+handbag
+backpack
+tote bag
+plastic bag
+paper bag
+umbrella
+hat
+scarf
+gloves
+shoe
+slipper
+jacket
+towel
+tissue box
+toilet paper
+toothbrush
+toothpaste
+hairbrush
+hair dryer
+lotion bottle
+shampoo bottle
+soap
+medicine bottle
+pill box
+face mask
+# around the home
+box
+cardboard box
+basket
+storage bin
+tray
+vase
+candle
+clock
+picture frame
+mirror
+flashlight
+light bulb
+toolbox
+screwdriver
+hammer
+tape measure
+stuffed animal
+toy
+ball
+board game
+pillow
+blanket
+laundry basket
+clothes hanger
+detergent bottle
+spray bottle
+cleaning cloth
+broom
+vacuum cleaner
+iron
+
+[stop]
+person
+sofa
+bed
+table
+desk
+chair
+stool
+shelf
+bookcase
+cabinet
+wardrobe
+door
+window
+curtain
+refrigerator
+oven
+stove
+sink
+toilet
+bathtub
+television
+potted plant
+bench
+rug
