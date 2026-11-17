@@ -21,6 +21,7 @@ import edu.cs6301.findback.map.Localizer
 import edu.cs6301.findback.map.Room
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.StudySettings
+import edu.cs6301.findback.trace.TraceSession
 import java.io.File
 import java.util.Locale
 
@@ -35,6 +36,9 @@ class LocationDialogs(
   private val main: MainView,
 ) {
   private fun dp(v: Int) = (v * activity.resources.displayMetrics.density).toInt()
+
+  /** v0.7: a dialog whose answers are logged as `ui_action` (a plain builder when the trace is off). */
+  private fun traced(name: String): AlertDialog.Builder = main.uiTrace.dialog(activity, name)
 
   // ------------------------------------------------------------------ Home sheet
 
@@ -102,7 +106,7 @@ class LocationDialogs(
           }
         )
       }
-    AlertDialog.Builder(activity)
+    traced("home_sheet")
       .setCustomTitle(box)
       .setItems(entries.map { it.first }.toTypedArray()) { _, i -> entries[i].second() }
       .setNegativeButton("Close", null)
@@ -115,7 +119,10 @@ class LocationDialogs(
   private fun spotsOf(st: Localizer.State?): List<FixPoint> =
     st?.map?.fixPoints?.filter { it.type == FixType.SPOT }?.sortedBy { it.createdMs } ?: emptyList()
 
-  /** Section 6.4, Settings: picture width, and "Save scan frames" (moved from Study settings). */
+  /**
+   * Section 6.4, Settings: picture width, and "Save scan frames" (moved from Study settings).
+   * v0.7: "Detailed trace" (applies at the next start) and the size of the trace data.
+   */
   private fun showSettings() {
     var dialog: AlertDialog? = null
     val saveFrames =
@@ -123,6 +130,24 @@ class LocationDialogs(
         text = "Save scan frames (image, depth and detections of every scan keyframe)"
         isChecked = activity.scanSaveFrames
       }
+    val detailedTrace =
+      CheckBox(activity).apply {
+        text = "Detailed trace (motion, depth, sensors, battery and what was pressed; no images or sound). Applies at the next start."
+        isChecked = activity.traceOnNextStart
+      }
+    val traceSize =
+      TextView(activity).apply {
+        textSize = 12f
+        setTextColor(MainView.GREY)
+        setPadding(dp(32), 0, 0, dp(4))
+        text = "Trace data on this phone: …"
+      }
+    // The folder walk runs off the UI thread.
+    val filesRoot = activity.filesRootDir
+    Thread {
+      val mb = TraceSession.storageBytes(filesRoot) / (1024.0 * 1024.0)
+      traceSize.post { traceSize.text = "Trace data on this phone: %.1f MB".format(Locale.US, mb) }
+    }.start()
     val box =
       LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL
@@ -135,20 +160,31 @@ class LocationDialogs(
             gravity = Gravity.CENTER_VERTICAL
             setTextColor(Color.rgb(0x1E, 0x88, 0xE5))
             setOnClickListener {
+              main.uiTrace.action("dialog:settings", "Picture width")
               dialog?.dismiss()
               main.showReferenceSettings()
             }
           }
         )
         addView(saveFrames)
+        addView(detailedTrace)
+        addView(traceSize)
       }
     dialog =
-      AlertDialog.Builder(activity)
+      traced("settings")
         .setTitle("Settings")
         .setView(box)
         .setPositiveButton("Save") { _, _ ->
           // v0.5 (plan section 8): read when a scan starts; logged as `scan_start.saveFrames`.
           if (saveFrames.isChecked != activity.scanSaveFrames) activity.setScanSaveFrames(saveFrames.isChecked)
+          // v0.7: read at the next start; logged as `session_start.traceOn`.
+          if (detailedTrace.isChecked != activity.traceOnNextStart) {
+            main.uiTrace.action("dialog:settings", if (detailedTrace.isChecked) "trace_on" else "trace_off")
+            activity.setTraceOnNextStart(detailedTrace.isChecked)
+            main.toast(
+              if (detailedTrace.isChecked) "Detailed trace turns on at the next start." else "Detailed trace turns off at the next start."
+            )
+          }
         }
         .setNegativeButton("Cancel", null)
         .show()
@@ -220,7 +256,7 @@ class LocationDialogs(
           }
         )
       }
-    AlertDialog.Builder(activity)
+    traced("study_settings")
       .setTitle("Study settings")
       .setView(box)
       .setPositiveButton("Save") { _, _ ->
@@ -253,7 +289,7 @@ class LocationDialogs(
         )
       spots.size == 1 -> useSpot(spots[0])
       else ->
-        AlertDialog.Builder(activity)
+        traced("locate_which")
           .setTitle("Locate at which spot?")
           .setItems(spots.map { it.name }.toTypedArray()) { _, i -> useSpot(spots[i]) }
           .setNegativeButton("Cancel", null)
@@ -291,7 +327,7 @@ class LocationDialogs(
   }
 
   private fun chooseRoomToRename(rooms: List<Room>) {
-    AlertDialog.Builder(activity)
+    traced("rename_which_room")
       .setTitle("Rename which room?")
       .setItems(rooms.map { it.name }.toTypedArray()) { _, i ->
         val r = rooms[i]
@@ -302,7 +338,7 @@ class LocationDialogs(
   }
 
   private fun confirmNewMap(mapId: String, records: Int) {
-    AlertDialog.Builder(activity)
+    traced("new_map")
       .setTitle("Start a new map?")
       .setMessage(
         "The current map and its $records item(s) move to an archive folder on the phone; nothing is deleted. " +
@@ -318,7 +354,7 @@ class LocationDialogs(
   /** Pick the current room: existing rooms, "New room…" or "No room". */
   fun pickRoom(rooms: List<Room>, currentId: String?, onPicked: (roomId: String?, newRoom: Room?) -> Unit) {
     val labels = rooms.map { (if (it.id == currentId) "● " else "") + it.name } + listOf("New room…", "No room")
-    AlertDialog.Builder(activity)
+    traced("pick_room")
       .setTitle("Which room are you in?")
       .setItems(labels.toTypedArray()) { _, i ->
         when {
@@ -336,6 +372,7 @@ class LocationDialogs(
   }
 
   private fun askName(title: String, initial: String, onName: (String) -> Unit) {
+    val name = if (title == "New room") "new_room" else "rename_room"
     val edit =
       EditText(activity).apply {
         setText(initial)
@@ -344,7 +381,7 @@ class LocationDialogs(
         selectAll()
       }
     val box = LinearLayout(activity).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(edit) }
-    AlertDialog.Builder(activity)
+    traced(name)
       .setTitle(title)
       .setView(box)
       .setPositiveButton("Save") { _, _ ->
@@ -357,14 +394,14 @@ class LocationDialogs(
 
   // ------------------------------------------------------------------ localizer prompts
 
-  private fun yesNo(title: String, message: String, yes: String, no: String, onAnswer: (Boolean) -> Unit) {
+  private fun yesNo(name: String, title: String, message: String, yes: String, no: String, onAnswer: (Boolean) -> Unit) {
     var answered = false
     fun answer(v: Boolean) {
       if (answered) return
       answered = true
       onAnswer(v)
     }
-    AlertDialog.Builder(activity)
+    traced(name)
       .setTitle(title)
       .setMessage(message)
       .setPositiveButton(yes) { _, _ -> answer(true) }
@@ -376,6 +413,7 @@ class LocationDialogs(
 
   fun askSetHome(onAnswer: (Boolean) -> Unit) =
     yesNo(
+      "set_home",
       "Set home here?",
       "The picture becomes the home of a new map. Items you save are stored relative to it, " +
         "so keep the picture in this place.",
@@ -386,6 +424,7 @@ class LocationDialogs(
 
   fun askUseNewFix(jumpM: Double, jumpDeg: Double, fixName: String, onAnswer: (Boolean) -> Unit) =
     yesNo(
+      "use_new_fix",
       "Position jumped %.1f m. Use the new location?".format(jumpM),
       "\"%s\" disagrees with the current map position by %.1f m and %.0f°. ".format(fixName, jumpM, jumpDeg) +
         "If the picture was moved, keep the current one.",
@@ -396,6 +435,7 @@ class LocationDialogs(
 
   fun askAddPicture(onAnswer: (Boolean) -> Unit) =
     yesNo(
+      "add_picture",
       "Locate with the picture too?",
       "You are located. Saving the picture here lets later sessions locate from it as well. Keep it in this place.",
       "Save",
@@ -433,7 +473,7 @@ class LocationDialogs(
         )
         addView(edit)
       }
-    AlertDialog.Builder(activity)
+    traced("spot_name")
       .setTitle(if (isHome) "Name the home spot" else "Name this spot")
       .setView(box)
       .setPositiveButton("Save") { _, _ ->

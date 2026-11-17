@@ -50,6 +50,20 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
 
   companion object {
     private val CHEVRON_COLOR = Color.rgb(0xFF, 0xFF, 0xFF)
+
+    /** Margins kept clear of the status panel (top) and guide card + buttons (bottom), in dp. */
+    const val TOP_INSET_DP = 150f
+    const val BOTTOM_INSET_DP = 290f
+    const val SIDE_INSET_DP = 40f
+
+    /**
+     * v0.7 trace (`guidance.csv`): the screen position (view pixels) the overlay draws a target
+     * at, and whether it counts as on screen there (the ring or chevron is drawn, not the edge
+     * arrow). The same rule as [onDraw]. Returns false when [inFront] is false.
+     */
+    fun onScreen(inFront: Boolean, sx: Float, sy: Float, w: Float, h: Float, density: Float): Boolean =
+      inFront && sx in (SIDE_INSET_DP * density)..(w - SIDE_INSET_DP * density) &&
+        sy in (TOP_INSET_DP * density)..(h - BOTTOM_INSET_DP * density)
   }
 
   @Volatile private var target: Target? = null
@@ -61,9 +75,9 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
   private fun dp(v: Float) = v * density
 
   /** Keep these clear of the status panel (top) and guide card + buttons (bottom). */
-  private val topInset = dp(150f)
-  private val bottomInset = dp(290f)
-  private val sideInset = dp(40f)
+  private val topInset = dp(TOP_INSET_DP)
+  private val bottomInset = dp(BOTTOM_INSET_DP)
+  private val sideInset = dp(SIDE_INSET_DP)
 
   private val ringPaint =
     Paint(Paint.ANTI_ALIAS_FLAG).apply {

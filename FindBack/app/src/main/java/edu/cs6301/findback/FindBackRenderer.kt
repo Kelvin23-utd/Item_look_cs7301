@@ -64,6 +64,7 @@ import edu.cs6301.findback.ml.YuvPlanes
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.CaptureRules
 import edu.cs6301.findback.study.GroundTruth
+import edu.cs6301.findback.trace.FrameTracer
 import edu.cs6301.findback.ui.Action
 import edu.cs6301.findback.ui.FoundAnswer
 import edu.cs6301.findback.ui.UiModel
@@ -252,6 +253,13 @@ class FindBackRenderer(private val activity: MainActivity) :
   private val store get() = activity.store
   private val events get() = activity.events
 
+  // v0.7 detailed trace: null when the setting is off (then nothing below is sampled or logged).
+  private val frameTracer: FrameTracer? = activity.trace?.let { t -> FrameTracer(t.writer, activity.events, t::error) }
+  private val density = activity.resources.displayMetrics.density
+  /** The frame (elapsed ms) in which a scan keyframe capture was tried; the depth sample waits then. */
+  private var keyframeAttemptMs = -1L
+  private var lastTraceErrorMs = -10_000L
+
   // Frozen models shared by all conditions.
   private val detector = BoxDetector()
   @Volatile private var embedder: Embedder? = null
@@ -360,6 +368,27 @@ class FindBackRenderer(private val activity: MainActivity) :
         loaded = activity.loadedMap,
       )
     scan = ScanController(activity, activity.events, activity.inventory, activity.store, activity.sessionId, { embedder }, scanUi)
+    if (frameTracer != null) {
+      // v0.7: one `lock_attempt` per Lock press (logging only).
+      localizer.lockListener = { a ->
+        events.log(
+          "lock_attempt",
+          mapOf(
+            "spot" to a.spot,
+            "kind" to a.kind,
+            "ok" to a.ok,
+            "reason" to a.reason,
+            "samples" to a.samples,
+            "posSpreadM" to a.posSpreadM,
+            "yawSpreadDeg" to a.yawSpreadDeg,
+            "durationMs" to a.durationMs,
+            "attemptInBar" to a.attemptInBar,
+            "rejectedRolled" to a.rejectedRolled,
+            "rejectedTracking" to a.rejectedTracking,
+          ),
+        )
+      }
+    }
     scope.launch(Dispatchers.Default) {
       val t0 = SystemClock.elapsedRealtimeNanos()
       try {
@@ -534,16 +563,19 @@ class FindBackRenderer(private val activity: MainActivity) :
   /** Called on the UI thread for a single tap on the camera view (VIEW pixel coordinates). */
   fun onTap(x: Float, y: Float) {
     if (view.lockModeActive) {
+      rejected("register", "lock_bar")
       view.toast("Line up the view, then press Lock")
       return
     }
     val q = query
     if (q != null && !q.measuring) {
+      rejected("register", "search_active", q = q)
       view.toast("Press Done to end this search")
       return
     }
     // v0.5: registration taps are ignored during a scan (plan section 8).
     if (scan.active != null) {
+      rejected("register", "scanning")
       view.toast("Press Stop scan first")
       return
     }
@@ -582,12 +614,19 @@ class FindBackRenderer(private val activity: MainActivity) :
 
   fun requestRenameRoom(id: String, name: String) = runOnGl { localizer.renameRoom(id, name) }
 
-  fun requestUseSpot(fixId: String) = runOnGl { localizer.startSpotLock(fixId) }
+  /** UI thread. The Lock press number in the open bar goes with the request, for `lock_attempt` only. */
+  fun requestUseSpot(fixId: String) {
+    val attempt = view.lockPressesInBar
+    runOnGl { localizer.startSpotLock(fixId, attempt) }
+  }
 
-  fun requestAddSpot() = runOnGl {
-    pendingGhost.set(null)
-    ghostCaptureRequested = true
-    localizer.startSpotCapture()
+  fun requestAddSpot() {
+    val attempt = view.lockPressesInBar
+    runOnGl {
+      pendingGhost.set(null)
+      ghostCaptureRequested = true
+      localizer.startSpotCapture(attempt)
+    }
   }
 
   fun requestCancelLock() = runOnGl {
@@ -752,6 +791,17 @@ class FindBackRenderer(private val activity: MainActivity) :
   }
 
   override fun onDrawFrame(render: SampleRender) {
+    val ft = frameTracer ?: return drawFrame(render)
+    // v0.7 `perf`: the time inside the frame callback, tracing included.
+    val t0 = System.nanoTime()
+    try {
+      drawFrame(render)
+    } finally {
+      ft.frameEnd(t0, mlBusy)
+    }
+  }
+
+  private fun drawFrame(render: SampleRender) {
     val session = activity.sessionHelper.session ?: return
     session.setCameraTextureNames(intArrayOf(backgroundRenderer.cameraColorTexture.textureId))
     displayRotationHelper.updateSessionIfNeeded(session)
@@ -802,15 +852,101 @@ class FindBackRenderer(private val activity: MainActivity) :
       updateOverlay(camera)
     } else {
       scan.active?.lastCameraPos = null // no walking across a tracking gap
-      pendingTap.set(null)
+      if (pendingTap.getAndSet(null) != null) rejected(if (query?.measuring == true) "measure" else "register", "tracking", q = query)
       hideOverlay()
       if (pendingVerify) {
         pendingVerify = false
+        rejected("verify", "tracking", q = query)
         view.post { view.toast("Tracking lost: move the phone slowly, then press Verify again.") }
       }
     }
 
+    frameTracer?.let { ft -> traceFrame(ft, frame, camera, session, nowMs) }
     guard("publishUi") { publishUi(frame, camera) }
+  }
+
+  // ---------------------------------------------------------------- v0.7 detailed trace (GL thread)
+
+  /** The `pose.csv`, `depth.csv` and `guidance.csv` samples due in this frame. */
+  private fun traceFrame(ft: FrameTracer, frame: Frame, camera: Camera, session: Session, nowMs: Long) {
+    val t0 = System.nanoTime()
+    try {
+      val ns = SystemClock.elapsedRealtimeNanos()
+      if (ft.poseDue(ns)) {
+        ft.pose(
+          ns,
+          camera,
+          localizer.located,
+          localizer.userMap,
+          localizer.userForwardMap,
+          localizer.proxies(nowMs)?.metersSinceFix,
+          view.screenName,
+          localizer.graph.currentRoom,
+          query?.id,
+        )
+      }
+      // A scan keyframe has priority: in a frame that tried one, the depth sample waits a frame.
+      val keyframeNow = scan.active != null && keyframeAttemptMs == nowMs
+      if (!keyframeNow && ft.depthDue(ns)) ft.depth(ns, frame, session)
+      val q = query
+      if (q != null && ft.guidanceDue(ns)) traceGuidance(ft, ns, q, camera)
+    } catch (e: Exception) {
+      val now = SystemClock.elapsedRealtime()
+      if (now - lastTraceErrorMs >= 5000L) {
+        lastTraceErrorMs = now
+        Log.e(TAG, "Trace sampling failed", e)
+        activity.trace?.error("gl", e.toString())
+      }
+    } finally {
+      ft.addTraceNs(System.nanoTime() - t0)
+    }
+  }
+
+  /** One `guidance.csv` row: where the item's remembered position is from the camera and on screen. */
+  private fun traceGuidance(ft: FrameTracer, ns: Long, q: Query, camera: Camera) {
+    val r = if (camera.trackingState == TrackingState.TRACKING) resolve(q.record) else null
+    var distance = Double.NaN
+    var bearing = Double.NaN
+    var elevation = Double.NaN
+    var inView: Boolean? = null
+    var ringX = Double.NaN
+    var ringY = Double.NaN
+    if (r != null) {
+      val w = r.first
+      val local = camera.displayOrientedPose.inverse().transformPoint(w)
+      val horiz = sqrt(local[0] * local[0] + local[2] * local[2])
+      distance = sqrt(horiz * horiz + local[1] * local[1]).toDouble()
+      bearing = Math.toDegrees(atan2(local[0], -local[2]).toDouble())
+      elevation = Math.toDegrees(atan2(local[1], horiz).toDouble())
+      // As updateOverlay and GuidanceOverlay.onDraw place the ring.
+      val clip = FloatArray(4)
+      Matrix.multiplyMV(clip, 0, viewProjectionMatrix, 0, floatArrayOf(w[0], w[1], w[2], 1f), 0)
+      if (clip[3] > 0f && viewWidth > 0 && viewHeight > 0) {
+        val sx = (clip[0] / clip[3] + 1f) / 2f * viewWidth
+        val sy = (1f - clip[1] / clip[3]) / 2f * viewHeight
+        ringX = sx.toDouble()
+        ringY = sy.toDouble()
+        inView = GuidanceOverlay.onScreen(true, sx, sy, viewWidth.toFloat(), viewHeight.toFloat(), density)
+      } else {
+        inView = false
+      }
+    }
+    ft.guidance(ns, q.id, q.mode?.name, q.resolvable, distance, bearing, elevation, q.routeM, q.straightM, inView, ringX, ringY)
+  }
+
+  /**
+   * v0.7 `capture_rejected`: a registration tap, a Verify press or a measuring tap refused before
+   * any capture. Trace on only. Any thread.
+   */
+  private fun rejected(stage: String, reason: String, value: Any? = null, q: Query? = null) {
+    if (frameTracer == null) return
+    events.log("capture_rejected", mapOf("stage" to stage, "reason" to reason, "value" to value, "query" to q?.id))
+  }
+
+  /** [rejected], then the banner [message] (as the refusals always showed it). */
+  private fun refuse(stage: String, reason: String, message: String, value: Any? = null, q: Query? = null) {
+    rejected(stage, reason, value, q)
+    view.post { view.toast(message) }
   }
 
   private val lastGuardLogMs = HashMap<String, Long>()
@@ -923,20 +1059,18 @@ class FindBackRenderer(private val activity: MainActivity) :
       if (q.measuring) handleMeasureTap(frame, q, tap.point)
       return
     }
-    if (scan.active != null) return // v0.5: a scan started after this tap was made
+    if (scan.active != null) return rejected("register", "scanning") // v0.5: a scan started after this tap was made
     // v0.4 "Update location": a tap made in that mode replaces the record it was made for.
     val updateOf = tap.updateOf
     if (updateOf != null && updateTarget !== updateOf) return // cancelled before the tap arrived
-    if (mlBusy) return view.post { view.toast("Still processing the previous capture…") }
-    val emb = embedder ?: return view.post { view.toast("Model still loading…") }
+    if (mlBusy) return refuse("register", "busy", "Still processing the previous capture…")
+    val emb = embedder ?: return refuse("register", "model_loading", "Model still loading…")
 
     val hit =
       bestHit(frame, tap.point.x, tap.point.y)
-        ?: return view.post {
-          view.toast("No surface found there. Move the phone slowly to map the area, then tap again.")
-        }
+        ?: return refuse("register", "no_hit", "No surface found there. Move the phone slowly to map the area, then tap again.")
     val image =
-      frame.tryAcquireCameraImage() ?: return view.post { view.toast("Camera image not ready; tap again.") }
+      frame.tryAcquireCameraImage() ?: return refuse("register", "image_not_ready", "Camera image not ready; tap again.")
 
     val imgPt = FloatArray(2)
     frame.transformCoordinates2d(
@@ -947,9 +1081,12 @@ class FindBackRenderer(private val activity: MainActivity) :
     if (distance > MAX_HIT_DISTANCE_M) {
       image.close()
       events.log("hit_rejected", mapOf("distance" to distance, "hitType" to hit.trackable.javaClass.simpleName))
-      return view.post {
-        view.toast("Depth looks wrong (%.0f m). Move the phone sideways a little, then tap again.".format(distance))
-      }
+      return refuse(
+        "register",
+        "depth_far",
+        "Depth looks wrong (%.0f m). Move the phone sideways a little, then tap again.".format(distance),
+        value = distance,
+      )
     }
     // v0.3: the remembered point is stored in the map frame (no longer relative to the picture).
     val toMap = localizer.tWM?.inverse()
@@ -1215,13 +1352,14 @@ class FindBackRenderer(private val activity: MainActivity) :
    * distance to the marker is the marker error ("present") or the displacement ("displaced").
    */
   private fun handleMeasureTap(frame: Frame, q: Query, tap: PointF) {
-    val hit = bestHit(frame, tap.x, tap.y) ?: return view.post { view.toast("No surface there; tap again or Skip.") }
+    val hit = bestHit(frame, tap.x, tap.y) ?: return refuse("measure", "no_hit", "No surface there; tap again or Skip.", q = q)
     val (marker, source) =
-      resolve(q.record) ?: return view.post { view.toast("No marker to compare against; tap Skip.") }
+      resolve(q.record) ?: return refuse("measure", "not_located", "No marker to compare against; tap Skip.", q = q)
     val truthValue = q.truth ?: GroundTruth.PRESENT
     val truth = hit.hitPose.translation
-    if (dist(truth, frame.camera.pose.translation) > MAX_HIT_DISTANCE_M) {
-      return view.post { view.toast("Depth looks wrong there. Move the phone a little and tap again.") }
+    val truthDistance = dist(truth, frame.camera.pose.translation)
+    if (truthDistance > MAX_HIT_DISTANCE_M) {
+      return refuse("measure", "depth_far", "Depth looks wrong there. Move the phone a little and tap again.", value = truthDistance, q = q)
     }
     val dx = truth[0] - marker[0]
     val dy = truth[1] - marker[1]
@@ -1251,24 +1389,24 @@ class FindBackRenderer(private val activity: MainActivity) :
     if (q.measuring) return
     if (!CaptureRules.verifyAllowed(q.captureMode, q.captures)) {
       // The button is disabled after the capture; this covers a press that was already on its way.
-      return view.post { view.toast("PAIRED mode: this query already has its capture. Press Done.") }
+      return refuse("verify", "capture_limit", "PAIRED mode: this query already has its capture. Press Done.", q = q)
     }
-    if (mlBusy) return view.post { view.toast("Still processing…") }
-    val emb = embedder ?: return view.post { view.toast("Model still loading…") }
+    if (mlBusy) return refuse("verify", "busy", "Still processing…", q = q)
+    val emb = embedder ?: return refuse("verify", "model_loading", "Model still loading…", q = q)
     val (world, source) =
       resolve(q.record)
-        ?: return view.post { view.toast("Not located: press Locate first.") }
+        ?: return refuse("verify", "not_located", "Not located: press Locate first.", q = q)
 
     val clip = FloatArray(4)
     Matrix.multiplyMV(clip, 0, viewProjectionMatrix, 0, floatArrayOf(world[0], world[1], world[2], 1f), 0)
     if (clip[3] <= 0f) {
-      return view.post { view.toast("The item's last place is behind you. Follow the arrow, then press Verify.") }
+      return refuse("verify", "behind", "The item's last place is behind you. Follow the arrow, then press Verify.", q = q)
     }
     val ndc = floatArrayOf(clip[0] / clip[3], clip[1] / clip[3])
     if (abs(ndc[0]) > 0.9f || abs(ndc[1]) > 0.9f) {
-      return view.post { view.toast("Bring the ring into view, then press Verify.") }
+      return refuse("verify", "not_in_view", "Bring the ring into view, then press Verify.", value = max(abs(ndc[0]), abs(ndc[1])), q = q)
     }
-    val image = frame.tryAcquireCameraImage() ?: return view.post { view.toast("Camera image not ready; try again.") }
+    val image = frame.tryAcquireCameraImage() ?: return refuse("verify", "image_not_ready", "Camera image not ready; try again.", q = q)
     val px = FloatArray(2)
     frame.transformCoordinates2d(Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES, ndc, Coordinates2d.IMAGE_PIXELS, px)
     val d1 = dist(world, camera.pose.translation).coerceAtLeast(0.1f)
@@ -1504,6 +1642,7 @@ class FindBackRenderer(private val activity: MainActivity) :
         localizer.lockActive || query != null || updateTarget != null
     val located = localizer.tWM != null
     scan.pacer.onFrame(nowMs, pose, scanning = located, passiveAllowed = false, busy = busy) ?: return
+    keyframeAttemptMs = nowMs // v0.7 trace: the depth sample waits for the next frame
     captureKeyframe(a, frame, camera, session, pose, nowMs)
   }
 
@@ -1611,7 +1750,7 @@ class FindBackRenderer(private val activity: MainActivity) :
   /** UI thread: the scan bar replaces Items and Scan (a search, rename or delete waits for Stop scan). */
   private fun onScanStarted(a: ActiveScan) {
     if (scan.active !== a) return // already stopped again
-    view.items.close()
+    view.items.close("scan")
     view.refresh()
     view.toast("Scan started: walk slowly past the things around you. Press Stop scan when done.")
   }

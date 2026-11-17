@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -26,11 +27,13 @@ import edu.cs6301.findback.memory.MemoryStore
 import edu.cs6301.findback.scan.InventoryStore
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.StudySettings
+import edu.cs6301.findback.trace.TraceSession
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
   companion object {
@@ -48,10 +51,15 @@ class MainActivity : AppCompatActivity() {
     /** v0.5: write every scan keyframe to scan/<scanId>/ (plan section 9). */
     private const val KEY_SCAN_SAVE_FRAMES = "scanSaveFrames"
     const val DEFAULT_SCAN_SAVE_FRAMES = true
+    /** v0.7: "Detailed trace" (Home sheet → Settings), read once at start (docs/PLAN_v0.7_trace.md). */
+    private const val KEY_TRACE_ON = "traceOn"
+    const val DEFAULT_TRACE_ON = true
   }
 
   /** New id per app launch; same-session anchors are only valid within one id. */
   val sessionId: String = UUID.randomUUID().toString().substring(0, 8)
+  /** v0.7: session start on the monotonic clock (`sessionMs` of `app_pause`, `app_resume`). */
+  val startElapsedMs: Long = SystemClock.elapsedRealtime()
 
   lateinit var store: MemoryStore
   /** v0.5 scan inventory (inventory.json), separate from records.json. */
@@ -101,6 +109,91 @@ class MainActivity : AppCompatActivity() {
   fun setScanSaveFrames(on: Boolean) {
     scanSaveFrames = on
     getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_SCAN_SAVE_FRAMES, on).apply()
+  }
+
+  /**
+   * v0.7 "Detailed trace" for this session, fixed at start (logged as `session_start.traceOn`).
+   * With it off there is no [trace]: no trace folder, no sensor listener, no new event.
+   */
+  var traceOn: Boolean = DEFAULT_TRACE_ON
+    private set
+
+  /** v0.7: the trace of this session, or null when [traceOn] is false. */
+  var trace: TraceSession? = null
+    private set
+
+  /** The stored setting, which applies from the next start. */
+  val traceOnNextStart: Boolean
+    get() = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_TRACE_ON, DEFAULT_TRACE_ON)
+
+  fun setTraceOnNextStart(on: Boolean) {
+    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_TRACE_ON, on).apply()
+  }
+
+  /** The files root (external files dir), for the Settings storage line. */
+  val filesRootDir: File
+    get() = filesRoot
+
+  /** v0.7 `session_start.arcoreVersion`: the installed Google Play Services for AR, or null. */
+  private fun arcoreVersion(): String? =
+    try {
+      @Suppress("DEPRECATION")
+      packageManager.getPackageInfo("com.google.ar.core", 0).versionName
+    } catch (e: Exception) {
+      null
+    }
+
+  /** v0.7 `session_start.displayPx`: the full display size in pixels, "WxH". */
+  private fun displayPx(): String =
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val b = windowManager.maximumWindowMetrics.bounds
+        "${b.width()}x${b.height()}"
+      } else {
+        val m = resources.displayMetrics
+        "${m.widthPixels}x${m.heightPixels}"
+      }
+    } catch (e: Exception) {
+      "unknown"
+    }
+
+  /** v0.7: the AR session's configuration has been logged (once per session). */
+  private var arConfigLogged = false
+
+  /**
+   * v0.7 `ar_config`: the camera configuration and depth mode, which are only known once the AR
+   * session exists (after `session_start`). Logged once per session whatever the trace setting:
+   * these are the `session_start` fields of the plan that cannot be known at `session_start`.
+   */
+  private fun logArConfig(session: com.google.ar.core.Session) {
+    if (arConfigLogged) return
+    arConfigLogged = true
+    try {
+      val cc = session.cameraConfig
+      val config = session.config
+      val fps = cc.fpsRange
+      events.log(
+        "ar_config",
+        mapOf(
+          "cameraConfig" to
+            JSONObject().apply {
+              put("cpuImage", "${cc.imageSize.width}x${cc.imageSize.height}")
+              put("texture", "${cc.textureSize.width}x${cc.textureSize.height}")
+              put("fpsMin", fps.lower)
+              put("fpsMax", fps.upper)
+              put("cameraId", cc.cameraId)
+              put("depthSensorUsage", cc.depthSensorUsage.name)
+            },
+          "depthMode" to config.depthMode.name,
+          "depthSupported" to session.isDepthModeSupported(Config.DepthMode.AUTOMATIC),
+          "lightEstimationMode" to config.lightEstimationMode.name,
+          "focusMode" to config.focusMode.name,
+          "traceOn" to traceOn,
+        ),
+      )
+    } catch (e: Exception) {
+      Log.w(TAG, "Could not log the AR configuration", e)
+    }
   }
 
   /** `studyTag` and `captureMode` as log fields. */
@@ -159,6 +252,7 @@ class MainActivity : AppCompatActivity() {
       studyTag = StudySettings.cleanTag(prefs.getString(KEY_STUDY_TAG, ""))
       captureMode = CaptureMode.parse(prefs.getString(KEY_CAPTURE_MODE, null))
       scanSaveFrames = prefs.getBoolean(KEY_SCAN_SAVE_FRAMES, DEFAULT_SCAN_SAVE_FRAMES)
+      traceOn = prefs.getBoolean(KEY_TRACE_ON, DEFAULT_TRACE_ON)
     }
     store = MemoryStore(root, sessionId)
     events = EventLog(root, sessionId)
@@ -194,8 +288,19 @@ class MainActivity : AppCompatActivity() {
         "mapNodes" to (loadedMap?.nodes?.size ?: 0),
         "mapFixPoints" to (loadedMap?.fixPoints?.size ?: 0),
         "mapRooms" to (loadedMap?.rooms?.size ?: 0),
-      ) + studyFields() // v0.4
+      ) + studyFields() + // v0.4
+        mapOf(
+          // v0.7 (the camera configuration and depth mode follow in `ar_config`)
+          "appVersion" to BuildConfig.VERSION_NAME,
+          "appCommit" to BuildConfig.GIT_COMMIT,
+          "arcoreVersion" to arcoreVersion(),
+          "displayPx" to displayPx(),
+          "traceOn" to traceOn,
+        )
     )
+    if (traceOn) {
+      trace = TraceSession(this, events, root, sessionId, startElapsedMs).also { lifecycle.addObserver(it) }
+    }
     inventory.loadError?.let { e ->
       // Only when inventory.json exists and cannot be read (it was copied aside).
       Log.e(TAG, "inventory.json could not be read", e)
@@ -217,6 +322,8 @@ class MainActivity : AppCompatActivity() {
           else -> "Failed to create AR session: $exception"
         }
       Log.e(TAG, message, exception)
+      // v0.7: a system toast, not the banner; logged like a banner message.
+      if (traceOn) events.log("ui_message", mapOf("text" to message, "screen" to null, "kind" to "toast"))
       Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
@@ -241,6 +348,7 @@ class MainActivity : AppCompatActivity() {
           .first()
       session.cameraConfig = best
       Log.i(TAG, "Camera config: CPU image ${best.imageSize}, GPU texture ${best.textureSize}")
+      logArConfig(session) // v0.7
     }
     lifecycle.addObserver(sessionHelper)
 

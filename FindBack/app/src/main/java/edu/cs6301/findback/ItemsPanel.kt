@@ -34,6 +34,7 @@ import edu.cs6301.findback.map.Localizer
 import edu.cs6301.findback.memory.ObjectRecord
 import edu.cs6301.findback.scan.InventoryEntry
 import edu.cs6301.findback.scan.InventoryText
+import edu.cs6301.findback.trace.UiTrace
 import edu.cs6301.findback.ui.UiModel
 import java.io.File
 import kotlin.math.max
@@ -43,7 +44,12 @@ import kotlin.math.max
  * activity layout. Tapped records and scanned entries in one list, newest first, with a search over
  * names, labels and room names, and room filter chips. A row opens the item sheet. UI thread only.
  */
-class ItemsPanel(private val activity: MainActivity, root: View) {
+class ItemsPanel(private val activity: MainActivity, root: View, private val ui: UiTrace) {
+  companion object {
+    /** v0.7 `ui_search`: the search text counts as settled after this long without a change. */
+    const val SEARCH_SETTLE_MS = 1000L
+  }
+
   /** What the panel lists, read when it opens and after every change. */
   class Data(
     val records: List<ObjectRecord>,
@@ -90,6 +96,10 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
   private var roomFilter: String? = null
   private val thumbs = HashMap<String, Bitmap?>()
 
+  /** v0.7: the search text at the last `ui_search` (kept in memory only, never logged). */
+  private var searchLogged = ""
+  private val searchSettled = Runnable { logSearch() }
+
   private val adapter =
     object : ArrayAdapter<Row>(activity, 0, shown) {
       override fun getView(position: Int, convertView: View?, parent: ViewGroup): View = rowView(getItem(position)!!)
@@ -102,16 +112,25 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
     list.adapter = adapter
     list.setOnItemClickListener { _, _, i, _ ->
       hideKeyboard() // the item sheet should not open over the keyboard
-      shown.getOrNull(i)?.let { showSheet(it) }
+      shown.getOrNull(i)?.let {
+        ui.action("items_row", if (it.record != null) "record" else "entry")
+        showSheet(it)
+      }
     }
-    root.findViewById<View>(R.id.itemsClose).setOnClickListener { close() }
+    root.findViewById<View>(R.id.itemsClose).setOnClickListener { close("button") }
     search.addTextChangedListener(
       object : TextWatcher {
         override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
 
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
 
-        override fun afterTextChanged(s: Editable?) = applyFilter()
+        override fun afterTextChanged(s: Editable?) {
+          applyFilter()
+          if (ui.on && isOpen) {
+            search.removeCallbacks(searchSettled)
+            search.postDelayed(searchSettled, SEARCH_SETTLE_MS)
+          }
+        }
       }
     )
     search.setOnEditorActionListener { _, id, _ ->
@@ -134,13 +153,20 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
     roomFilter = null
     thumbs.clear()
     search.setText("")
+    search.removeCallbacks(searchSettled)
+    searchLogged = ""
+    ui.action("items_open")
     panel.visibility = View.VISIBLE
     lightStatusBar(true) // dark status-bar icons on the white panel
     rebuild()
   }
 
-  fun close() {
+  /** [reason] (v0.7 `ui_action.detail`): what closed it ("button", "back", "find", "moved", "scan"). */
+  fun close(reason: String = "other") {
     if (!isOpen) return
+    search.removeCallbacks(searchSettled)
+    logSearch() // a search typed and left without waiting a second
+    ui.action("items_close", reason)
     hideKeyboard()
     search.clearFocus()
     panel.visibility = View.GONE
@@ -192,6 +218,7 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
           setMargins(dp(4), dp(4), dp(4), dp(4))
         }
       setOnClickListener {
+        ui.action("items_room", label)
         roomFilter = roomId
         for (i in 0 until chips.childCount) chips.getChildAt(i).isSelected = chips.getChildAt(i) === this
         applyFilter()
@@ -224,6 +251,15 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
     val msg = UiModel.itemsEmptyText(all.size, filtered.size, q, roomFilter?.let { d.state?.roomName(it) })
     empty.text = msg
     empty.visibility = if (msg == null) View.GONE else View.VISIBLE
+  }
+
+  /** v0.7 `ui_search`, when the text changed since the last one: its length and the rows shown. */
+  private fun logSearch() {
+    if (!ui.on || data == null) return
+    val q = search.text?.toString() ?: ""
+    if (q == searchLogged) return
+    searchLogged = q
+    ui.search(q.length, shown.size, all.size, roomFilter?.let { data?.state?.roomName(it) ?: it })
   }
 
   // ------------------------------------------------------------------ rows
@@ -379,6 +415,7 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
           activity.theme.resolveAttribute(android.R.attr.selectableItemBackground, tv, true)
           setBackgroundResource(tv.resourceId)
           setOnClickListener {
+            ui.action("dialog:item_sheet", label)
             sheet?.dismiss()
             onClick()
           }
@@ -387,18 +424,18 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
     textButton("Rename") { askName(row.name) { n -> if (r != null) a.onRename(r, n) else a.onRenameEntry(e!!, n) } }
     if (r != null) {
       textButton("Moved it") {
-        close()
+        close("moved")
         a.onMoved(r)
       }
     }
     textButton("Delete") { confirmDelete(row, a) }
     box.addView(buttons)
     sheet =
-      AlertDialog.Builder(activity)
+      ui.dialog(activity, "item_sheet")
         .setTitle(row.name)
         .setView(ScrollView(activity).apply { addView(box) })
         .setPositiveButton("Find") { _, _ ->
-          close()
+          close("find")
           if (r != null) a.onFind(r) else a.onFindEntry(e!!)
         }
         .setNegativeButton("Close", null)
@@ -408,7 +445,7 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
   private fun confirmDelete(row: Row, a: Actions) {
     val r = row.record
     val e = row.entry
-    AlertDialog.Builder(activity)
+    ui.dialog(activity, "item_delete")
       .setTitle("Delete \"" + row.name + "\"?")
       .setMessage(
         if (r != null) "This removes the item from the list. Its photo and study logs are kept for analysis."
@@ -429,7 +466,7 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
       }
     val box = LinearLayout(activity).apply { setPadding(dp(20), dp(8), dp(20), 0); addView(edit) }
     val dialog =
-      AlertDialog.Builder(activity)
+      ui.dialog(activity, "item_rename")
         .setTitle("Rename")
         .setView(box)
         .setPositiveButton("Save") { _, _ ->

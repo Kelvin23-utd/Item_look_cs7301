@@ -12,6 +12,7 @@ import edu.cs6301.findback.memory.EventLog
 import java.util.Queue
 import java.util.UUID
 import kotlin.math.abs
+import kotlin.math.max
 import org.json.JSONObject
 
 /**
@@ -55,6 +56,10 @@ class Localizer(
     const val WALK_FEED_MS = 200L
     /** An IMAGE fix point measured at another picture width is ignored. */
     const val WIDTH_TOLERANCE_M = 0.0005
+
+    /** v0.7 `lock_attempt.kind`. */
+    const val KIND_USE = "use"
+    const val KIND_ADD = "add"
 
     fun newId(): String = UUID.randomUUID().toString().substring(0, 8)
 
@@ -118,6 +123,29 @@ class Localizer(
     fun roomName(id: String?): String? = map?.room(id)?.name
   }
 
+  /**
+   * v0.7 detailed trace (`lock_attempt`): how one Lock press ended. [kind] is "use" (Locate at a
+   * spot) or "add" (Set home here, Add a spot here); [reason] is null on success. Samples and
+   * spreads are those of the frames collected so far (0 and null when none). Logging only: no
+   * decision of the localizer reads it.
+   */
+  data class LockAttempt(
+    val spot: String?,
+    val kind: String,
+    val ok: Boolean,
+    val reason: String?,
+    val samples: Int,
+    val posSpreadM: Double?,
+    val yawSpreadDeg: Double?,
+    val durationMs: Long,
+    val attemptInBar: Int,
+    val rejectedRolled: Int,
+    val rejectedTracking: Int,
+  )
+
+  /** v0.7: called on the GL thread when a Lock press ends; null when the trace is off. */
+  var lockListener: ((LockAttempt) -> Unit)? = null
+
   private data class Jump(val m: Double, val horizM: Double, val deg: Double)
 
   // ---- map content
@@ -161,6 +189,8 @@ class Localizer(
   /** Display axis the heading is taken from during this lock: the spot's stored one, or chosen on capture. */
   private var lockAxis: String? = null
   private var lockStartMs = 0L
+  /** v0.7 trace only: the Lock press number in the open bar, as the caller passed it. */
+  private var lockAttemptInBar = 0
 
   // ---- user
   /** Camera position in M on the last tracking frame while located. */
@@ -491,36 +521,73 @@ class Localizer(
 
   // ------------------------------------------------------------------ spots
 
-  /** "Use a spot" → Lock: average the gated camera pose and fix the map at [fixId]. */
-  fun startSpotLock(fixId: String) {
+  /**
+   * "Use a spot" → Lock: average the gated camera pose and fix the map at [fixId]. [attemptInBar]
+   * (v0.7) is only passed on to the trace's `lock_attempt`.
+   */
+  fun startSpotLock(fixId: String, attemptInBar: Int = 0) {
     val fix = fixPoints.firstOrNull { it.id == fixId && it.type == FixType.SPOT }
     if (fix == null) {
+      reportLock(fixId, KIND_USE, false, "spot_missing", null, 0L, attemptInBar)
       ui.lockFinished(false, "That spot is not in this map.")
       return
     }
-    startLock(LockMode.USE, fix)
+    startLock(LockMode.USE, fix, attemptInBar)
   }
 
   /** "Add a spot here" → Lock. Needs a located map, or no map at all (the spot becomes home). */
-  fun startSpotCapture() {
+  fun startSpotCapture(attemptInBar: Int = 0) {
     if (mapId != null && tWM == null) {
+      reportLock(null, KIND_ADD, false, "not_located", null, 0L, attemptInBar)
       ui.lockFinished(false, "Press Locate first, then add a spot.")
       return
     }
-    startLock(LockMode.CAPTURE, null)
+    startLock(LockMode.CAPTURE, null, attemptInBar)
   }
 
-  private fun startLock(mode: LockMode, fix: FixPoint?) {
+  private fun startLock(mode: LockMode, fix: FixPoint?, attemptInBar: Int) {
+    // v0.7 trace: a Lock press while a lock is still collecting starts it again.
+    if (lockMode != null) reportActiveLock(false, "restarted", null, SystemClock.elapsedRealtime())
     lockMode = mode
     lockFix = fix
     lockAxis = if (mode == LockMode.USE) fix?.yawAxis ?: "X" else null
     lockCollector = SpotCollector()
     lockStartMs = SystemClock.elapsedRealtime()
+    lockAttemptInBar = attemptInBar
   }
 
   fun cancelLock() {
     if (lockMode == null) return
+    reportActiveLock(false, "cancelled", null, SystemClock.elapsedRealtime())
     endLock()
+  }
+
+  /** v0.7 trace: report the running lock (call before [endLock] clears it). */
+  private fun reportActiveLock(ok: Boolean, reason: String?, spotId: String?, nowMs: Long) {
+    if (lockListener == null) return
+    val mode = lockMode ?: return
+    val kind = if (mode == LockMode.USE) KIND_USE else KIND_ADD
+    reportLock(spotId ?: lockFix?.id, kind, ok, reason, lockCollector, nowMs - lockStartMs, lockAttemptInBar)
+  }
+
+  private fun reportLock(spot: String?, kind: String, ok: Boolean, reason: String?, c: SpotCollector?, durationMs: Long, attemptInBar: Int) {
+    val l = lockListener ?: return
+    val est = c?.estimate()
+    l(
+      LockAttempt(
+        spot = spot,
+        kind = kind,
+        ok = ok,
+        reason = reason,
+        samples = est?.samples ?: 0,
+        posSpreadM = est?.posSpreadM,
+        yawSpreadDeg = est?.yawSpreadDeg,
+        durationMs = durationMs,
+        attemptInBar = attemptInBar,
+        rejectedRolled = c?.rejectedRolled ?: 0,
+        rejectedTracking = c?.rejectedTracking ?: 0,
+      )
+    )
   }
 
   private fun endLock() {
@@ -532,6 +599,8 @@ class Localizer(
 
   private fun checkLockTimeout(nowMs: Long, c: SpotCollector): Boolean {
     if (nowMs - lockStartMs <= SpotCollector.SPOT_TIMEOUT_MS) return false
+    // v0.7 trace: the same split as failureHint() below.
+    reportActiveLock(false, if (c.rejectedRolled >= max(1, c.rejectedTracking)) "timeout_rolled" else "timeout_tracking", null, nowMs)
     endLock()
     ui.lockFinished(false, c.failureHint())
     return true
@@ -557,10 +626,14 @@ class Localizer(
     val est = c.estimate() ?: return
     val mode = lockMode
     val fix = lockFix
+    // v0.7 trace: what the lock ends with, taken before endLock() clears it.
+    val durationMs = nowMs - lockStartMs
+    val attemptInBar = lockAttemptInBar
     endLock()
     when (mode) {
       LockMode.USE -> {
         fix ?: return
+        reportLock(fix.id, KIND_USE, true, null, c, durationMs, attemptInBar)
         ui.lockFinished(true, "")
         if (tWM == null) applyFix(fix, est, "first", disagreement = false, accepted = null) else proposeFix(fix, est, "manual")
       }
@@ -568,11 +641,14 @@ class Localizer(
         val home = mapId == null
         val mapPose = if (home) null else tWM?.inverse()?.compose(est.pose)
         if (!home && mapPose == null) {
+          reportLock(null, KIND_ADD, false, "lost_location", c, durationMs, attemptInBar)
           ui.lockFinished(false, "Lost the map position during the capture: press Locate, then try again.")
           return
         }
+        val spotId = newId()
+        reportLock(spotId, KIND_ADD, true, null, c, durationMs, attemptInBar)
         ui.lockFinished(true, "")
-        ui.spotCaptured(SpotCapture(newId(), est.pose, mapPose, est, home, axisName))
+        ui.spotCaptured(SpotCapture(spotId, est.pose, mapPose, est, home, axisName))
       }
       null -> {}
     }

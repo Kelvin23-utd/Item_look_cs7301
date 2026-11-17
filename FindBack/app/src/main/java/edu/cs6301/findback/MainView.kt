@@ -43,6 +43,7 @@ import edu.cs6301.findback.study.GroundTruth
 import edu.cs6301.findback.study.Mobility
 import edu.cs6301.findback.study.StudySettings
 import edu.cs6301.findback.study.VerifyLabel
+import edu.cs6301.findback.trace.UiTrace
 import edu.cs6301.findback.ui.Action
 import edu.cs6301.findback.ui.FoundAnswer
 import edu.cs6301.findback.ui.GuideInput
@@ -139,8 +140,18 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
   private val primaryButton: Button = root.findViewById(R.id.primaryButton)
   private val buttonGap: View = root.findViewById(R.id.buttonGap)
 
+  /** The screen as last drawn, for Back. */
+  private var screen: Screen? = null
+
+  /** v0.7: [screen]'s name for the GL thread's `pose.csv`. */
+  @Volatile var screenName: String? = null
+    private set
+
+  /** v0.7 detailed trace: `ui_screen`, `ui_action`, `ui_search`, `ui_message` (no-ops when off). */
+  val uiTrace = UiTrace(activity.events, activity.traceOn) { screen?.name }
+
   val dialogs = LocationDialogs(activity, renderer, this)
-  val items = ItemsPanel(activity, root)
+  val items = ItemsPanel(activity, root, uiTrace)
 
   /** The bottom-bar actions other than Lock and Cancel (the renderer handles them). */
   var onAction: ((Action) -> Unit)? = null
@@ -151,11 +162,12 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
   private var lockInstructions = ""
   private var onLock: (() -> Unit)? = null
   private var onLockCancel: (() -> Unit)? = null
+  /** v0.7 `lock_attempt.attemptInBar`: Lock presses since the lock bar opened (UI thread). */
+  var lockPressesInBar = 0
+    private set
 
   /** The latest frame from the GL thread; null until the first one. */
   private var frame: UiFrame? = null
-  /** The screen as last drawn, for Back. */
-  private var screen: Screen? = null
 
   init {
     val gestures =
@@ -175,22 +187,31 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
 
     // The pill picks the room when located, locates when not, and opens the menu without a map.
     statusPill.setOnClickListener {
-      val st = renderer.uiState ?: return@setOnClickListener toast("Starting…")
-      val map = st.map
+      val st = renderer.uiState
+      val map = st?.map
+      uiTrace.action("pill", if (st == null) "starting" else if (map == null) "sheet" else if (!st.located) "locate" else "room")
+      if (st == null) return@setOnClickListener toast("Starting…")
       if (map == null) dialogs.showSheet(st)
       else if (!st.located) dialogs.locate(st)
       else dialogs.pickRoom(map.rooms, st.currentRoomId) { id, newRoom -> renderer.requestPickRoom(id, newRoom, "chip") }
     }
     root.findViewById<View>(R.id.menuButton).setOnClickListener {
+      uiTrace.action("menu")
       val st = renderer.uiState
       if (st == null) toast("Starting…") else dialogs.showSheet(st)
     }
-    banner.setOnClickListener { hideBanner.run() }
+    banner.setOnClickListener {
+      uiTrace.action("banner_dismiss")
+      hideBanner.run()
+    }
 
     secondaryButton.setOnClickListener { v -> (v.tag as? Action)?.let { dispatch(it) } }
     primaryButton.setOnClickListener { v -> (v.tag as? Action)?.let { dispatch(it) } }
-    guideLocate.setOnClickListener { dispatch(Action.LOCATE) }
-    guideStatus.setOnClickListener { showLastCapture() }
+    guideLocate.setOnClickListener { dispatch(Action.LOCATE, "guide_card") }
+    guideStatus.setOnClickListener {
+      uiTrace.action("guide_status", if (guideOpensResult) "result" else null)
+      showLastCapture()
+    }
 
     // Section 8: Back closes the Items panel, cancels the lock bar or "Moved it", and does not
     // leave the app during a search or a scan.
@@ -198,13 +219,14 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       activity,
       object : OnBackPressedCallback(true) {
         override fun handleOnBackPressed() {
+          uiTrace.action("back")
           when {
-            items.isOpen -> items.close()
-            lockModeActive -> dispatch(Action.CANCEL_LOCK)
+            items.isOpen -> items.close("back")
+            lockModeActive -> dispatch(Action.CANCEL_LOCK, "back")
             screen == Screen.FINDING -> toast("Press Done to end the search")
             screen == Screen.MEASURING -> toast("Tap the true centre, or press Skip")
             screen == Screen.SCANNING -> toast("Press Stop scan first")
-            screen == Screen.UPDATING -> dispatch(Action.CANCEL_UPDATE)
+            screen == Screen.UPDATING -> dispatch(Action.CANCEL_UPDATE, "back")
             else -> {
               isEnabled = false
               activity.onBackPressedDispatcher.onBackPressed()
@@ -224,9 +246,12 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
     root.post { action() }
   }
 
-  private fun dispatch(a: Action) {
+  /** [source] (v0.7 `ui_action.detail`): null for the bottom bar, else "guide_card" or "back". */
+  private fun dispatch(a: Action, source: String? = null) {
+    uiTrace.action(a.name, source) // v0.7: every bottom-bar button, Locate in the guide card, Back's cancels
     when (a) {
       Action.LOCK -> {
+        lockPressesInBar++
         lockText.text = "Hold still…"
         onLock?.invoke()
       }
@@ -252,6 +277,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       return
     }
     if (message.isEmpty()) return
+    uiTrace.message(message) // v0.7: every banner message passes here
     banner.removeCallbacks(hideBanner)
     banner.text = message
     banner.visibility = View.VISIBLE
@@ -306,7 +332,9 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
         policyRecommends = q?.decision?.verify == true,
       )
     val s = UiModel.screen(input)
+    if (s != screen) uiTrace.screenChanged(screen?.name, s.name) // v0.7
     screen = s
+    screenName = s.name
 
     // Top.
     val pill = UiModel.pill(input)
@@ -376,6 +404,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
    */
   fun enterLockMode(title: String, text: String, ghost: Bitmap?, onLock: () -> Unit, onCancel: () -> Unit) {
     lockModeActive = true
+    lockPressesInBar = 0
     lockInstructions = text
     lockTitle.text = title
     lockText.text = text
@@ -577,7 +606,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
         )
         addView(edit)
       }
-    AlertDialog.Builder(activity)
+    uiTrace.dialog(activity, "picture_width")
       .setTitle("Picture width")
       .setView(box)
       .setPositiveButton("Save") { _, _ ->
@@ -675,6 +704,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
     if (d.hasMap) {
       showRoom()
       roomRow.setOnClickListener {
+        uiTrace.action("dialog:register", "room")
         dialogs.pickRoom(allRooms, roomId) { id, created ->
           roomId = id
           picked = true
@@ -730,7 +760,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       mobilityGroup = group
     }
 
-    AlertDialog.Builder(activity)
+    uiTrace.dialog(activity, if (update != null) "register_update" else "register")
       .setTitle(if (update != null) "New place for \"" + update.name + "\"" else "Remember this object?")
       .setView(ScrollView(activity).apply { addView(layout) }) // the name field stays reachable above the keyboard
       .setPositiveButton("Save") { _, _ ->
@@ -775,7 +805,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
     }
     if (end.reason == "paused") line("The scan ended because the app left the screen.", 14f, dark)
     line(UiModel.scanSummaryDetails(end.durationMs, end.metersWalked, end.keyframes, end.depthCheckMedianM), 12f, GREY)
-    AlertDialog.Builder(activity)
+    uiTrace.dialog(activity, "scan_summary")
       .setTitle("Scan finished")
       .setView(box)
       .setPositiveButton("OK", null)
@@ -832,7 +862,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
         else "The view at the ring does not match the remembered photo well enough. The item may still be here: " +
           "the ring shows where it was last seen."
     }
-    AlertDialog.Builder(activity)
+    uiTrace.dialog(activity, if (study) "verify_result" else "last_capture")
       .setTitle(title)
       .setView(row)
       .setMessage(message)
@@ -847,7 +877,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
    */
   fun askFoundIt(onAnswer: (FoundAnswer) -> Unit) {
     val answers = FoundAnswer.values()
-    AlertDialog.Builder(activity)
+    uiTrace.dialog(activity, "found_it")
       .setTitle("Did you find it?")
       .setItems(answers.map { it.label }.toTypedArray()) { _, i -> onAnswer(answers[i]) }
       .setNegativeButton("Keep looking", null)
@@ -859,7 +889,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
    * cancelable, so the query always ends with exactly one answer ("Skip" is the way out).
    */
   fun askGroundTruth(name: String, onAnswer: (String) -> Unit) {
-    AlertDialog.Builder(activity)
+    uiTrace.dialog(activity, "ground_truth")
       .setTitle("Ground truth: \"$name\"")
       .setItems(GroundTruth.CHOICES.map { it.second }.toTypedArray()) { _, i -> onAnswer(GroundTruth.CHOICES[i].first) }
       .setCancelable(false)
@@ -871,7 +901,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
    * dialog, returns to the search with nothing changed; [onFinish] goes on to the ground truth.
    */
   fun askCaptureFirst(name: String, onFinish: () -> Unit) {
-    AlertDialog.Builder(activity)
+    uiTrace.dialog(activity, "capture_first")
       .setTitle("Capture once before finishing?")
       .setMessage(
         "PAIRED mode takes one capture per query, and \"$name\" has none yet. " +
@@ -900,6 +930,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
     fun answer(label: String?) {
       if (answered) return
       answered = true
+      uiTrace.action("dialog:verify_label", label ?: "dismissed")
       benchmarkCondition = VerifyLabel.CONDITIONS.getOrElse(spinner.selectedItemPosition) { benchmarkCondition }
       onAnswer(label, benchmarkCondition)
     }

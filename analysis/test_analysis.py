@@ -27,6 +27,9 @@ import tempfile
 
 import numpy as np
 
+# np.trapezoid is numpy >= 2.0; numpy 1.x calls it np.trapz (same function).
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
@@ -406,7 +409,7 @@ def test_roc_points_and_youden():
     assert np.all(np.diff(fpr) >= 0) and np.all(np.diff(tpr) >= 0)
     i = list(thr).index(0.7)
     assert close(tpr[i], 3 / 4) and close(fpr[i], 1 / 6)            # confirm when similarity >= 0.7
-    assert close(np.trapezoid(tpr, fpr), M.auc(pos, neg))
+    assert close(_trapezoid(tpr, fpr), M.auc(pos, neg))
     # J = 4/4 - 2/6 for every threshold in (0.50, 0.60]; the tie goes to the highest, 0.60.
     assert M.youden_threshold(pos, neg) == 0.60
     assert M.youden_threshold([], neg) is None
@@ -738,7 +741,7 @@ def test_whatif_formulas_by_hand():
         tpr = np.linspace(0, 1, 20001)
         fpr = np.array([M.binormal_fpr(t, auc) for t in tpr])
         assert fpr[0] == 0.0 and fpr[-1] == 1.0 and (np.diff(fpr) >= 0).all()
-        assert close(1.0 - np.trapezoid(fpr, tpr), auc, 2e-4)         # the area under the curve is the AUC it was asked for
+        assert close(1.0 - _trapezoid(fpr, tpr), auc, 2e-4)         # the area under the curve is the AUC it was asked for
         assert (fpr <= tpr + 1e-12).all()
 
     # A population with exactly b = 0.3, c_p = 0.9, c_s = 0.1: 30 stale (3 confirm), 70 at the marker (63 confirm).

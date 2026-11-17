@@ -2,7 +2,7 @@
 
 Android (Kotlin, ARCore) prototype for the CS 6301 project. It builds on Google's ARCore `ml_kotlin` sample (Apache 2.0).
 
-Current version: **v0.6 (a simpler screen)**, see [the v0.6 section](#v06-a-simpler-screen-nov-16) and `docs/PLAN_v0.6_ui.md`, on top of v0.5 Block A (scan mode, `docs/PLAN_v0.5_scan_once.md`), v0.4 (study instrumentation) and v0.3 (home map). See [the v0.4 section](#v04-study-instrumentation-nov-16) and `docs/STUDY_SPEC_v0.4.md`, and [the v0.3 section](#v03-home-map-nov-16) and `docs/PLAN_v0.3_home_map.md`. The table below describes v0; where a later section differs, the later section wins.
+Current version: **v0.7 (detailed trace)**, see [the v0.7 section](#v07-detailed-trace-nov-16) and `docs/PLAN_v0.7_trace.md`, on top of v0.6 (a simpler screen), see [the v0.6 section](#v06-a-simpler-screen-nov-16) and `docs/PLAN_v0.6_ui.md`, on top of v0.5 Block A (scan mode, `docs/PLAN_v0.5_scan_once.md`), v0.4 (study instrumentation) and v0.3 (home map). See [the v0.4 section](#v04-study-instrumentation-nov-16) and `docs/STUDY_SPEC_v0.4.md`, and [the v0.3 section](#v03-home-map-nov-16) and `docs/PLAN_v0.3_home_map.md`. The table below describes v0; where a later section differs, the later section wins.
 
 ## What v0 does
 
@@ -21,7 +21,7 @@ Enable **Developer options → USB debugging** on the phone, connect it by USB a
 
 ```bash
 cd FindBack
-./gradlew testDebugUnitTest     # JVM unit tests (map math, walk graph, guidance, map.json, old records, v0.4 record fields, records log, embedding files)
+./gradlew testDebugUnitTest     # JVM unit tests (map math, walk graph, guidance, map.json, old records, v0.4 record fields, records log, embedding files, v0.7 trace CSV lines, rate gates, depth statistics, trace writer)
 ./gradlew installDebug          # build and install
 adb shell am start -n edu.cs6301.findback/.MainActivity
 adb logcat -s FindBack FindBackEvent   # live log
@@ -222,6 +222,46 @@ Replaying the lines in order gives the active list at any time. Two kinds of lin
 | --- | --- |
 | `query_end` | adds `truthPrompt`: `study` (the five-way prompt) or `simple` ("Did you find it?"). Everyday queries carry no study tag, so the analysis already leaves them out. |
 | `register` | unchanged fields. `nameSource` is `typed` only when the saved name differs from the default name (new item) or from the old name (Moved it); with the field now pre-filled, saving the default unchanged is `default`, as before. |
+
+## v0.7: detailed trace (Nov 16)
+
+`docs/PLAN_v0.7_trace.md`. The app now also records how the phone moved, how good the depth was, how bright and warm it was, what was pressed and which messages appeared, so that problems can be found from normal use. Nothing else changed: every earlier event keeps its name and fields (only `session_start` gains fields), and verification, policy, localizer decisions, scan pipeline, stores, screens and study mode are as in v0.6. No permission was added; no image or sound is recorded by this version, and the typed Items search is not logged (only its length and result count).
+
+**Setting.** Menu ⋮ → Settings → **Detailed trace** (default on), stored in preferences and read at start: a change applies at the next start, and `session_start.traceOn` says which applied. Off: no `trace/` folder, no sensor listener, none of the new events below except the `session_start` fields and `ar_config`. Settings also shows "Trace data on this phone: N MB". Nothing is deleted automatically; one hour is about 30–40 MB, mostly `sensors.csv`.
+
+### v0.7 events
+
+| Event | When | Fields |
+| --- | --- | --- |
+| `session_start` | as before | adds `appVersion` (`versionName`, now 0.7), `appCommit` (git short hash at build time, `-dirty` when tracked files had changes, `unknown` without git), `arcoreVersion` (installed Google Play Services for AR), `displayPx`, `traceOn` |
+| `ar_config` | once per session, when the AR session is configured (after `session_start`; also with the trace off) | `cameraConfig` (`cpuImage`, `texture`, `fpsMin`, `fpsMax`, `cameraId`, `depthSensorUsage`), `depthMode`, `depthSupported`, `lightEstimationMode`, `focusMode`, `traceOn`. These are the camera and depth fields the plan puts in `session_start`; they are not known until the AR session exists |
+| `app_pause`, `app_resume` | activity lifecycle | `sessionMs`; on pause also `traceBytes`, `traceDropped` |
+| `ui_screen` | the screen (`UiModel.screen`) changes | `from` (null for the first), `to`, `msInPrevious` |
+| `ui_action` | every button press or choice | `action`, `screen`, `detail`. Bottom bar: the `Action` name (`detail` `guide_card` for Locate in the card, `back` when Back cancelled); `pill` (detail: what it did), `menu`, `banner_dismiss`, `guide_status`, `back`, `items_open`, `items_close` (detail: `button`, `back`, `find`, `moved`, `scan`), `items_room` (detail: the chip), `items_row` (`record` or `entry`); every dialog answer as `dialog:<name>` with the button or list label as detail, `back` for Back or a tap outside. Dialog names: `home_sheet`, `settings`, `study_settings`, `picture_width`, `locate_which`, `pick_room`, `new_room`, `rename_room`, `rename_which_room`, `new_map`, `set_home`, `use_new_fix`, `add_picture`, `spot_name`, `register`, `register_update`, `scan_summary`, `verify_result`, `last_capture`, `found_it`, `ground_truth`, `capture_first`, `verify_label`, `item_sheet`, `item_delete`, `item_rename` |
+| `ui_search` | the Items search text has not changed for 1 s, or the panel closes with a new text | `chars`, `results`, `total`, `roomFilter` (the text itself is not logged) |
+| `ui_message` | every banner message (`MainView.toast`), and the system toast when the AR session cannot start (`kind: "toast"`) | `text`, `screen` |
+| `capture_rejected` | a registration tap, Verify press or measuring tap refused before any capture | `stage` (`register`, `verify`, `measure`), `reason`, `value` (the depth in m for `depth_far`, the largest NDC coordinate for `not_in_view`), `query`. Reasons: `no_hit`, `depth_far`, `image_not_ready`, `busy`, `model_loading`, `behind`, `not_in_view`, `not_located`, `tracking` (the tap or press arrived while tracking was lost; before v0.7 such a tap was dropped silently), plus `lock_bar`, `search_active`, `scanning` (a camera tap while the lock bar, a search or a scan is on) and `capture_limit` (PAIRED, second capture). `hit_rejected` is still logged as before |
+| `lock_attempt` | every Lock press ends | `spot` (fix point id; the new spot's id for a successful add), `kind` (`use`, `add`), `ok`, `reason` (`timeout_rolled`, `timeout_tracking`, `cancelled`, `restarted` (Lock pressed again while collecting), `spot_missing`, `not_located`, `lost_location`), `samples`, `posSpreadM`, `yawSpreadDeg` (of the frames collected), `durationMs`, `attemptInBar` (1 for the first press since the bar opened), `rejectedRolled`, `rejectedTracking` |
+| `device_state` | session start, every 30 s while resumed, on pause | `trigger`, `sessionMs`, `batteryPct`, `batteryTempC`, `charging`, `currentNowMa` (as the battery reports it; its sign while discharging depends on the phone), `chargeCounterMah`, `thermalStatus` (`PowerManager.currentThermalStatus`: 0 none … 6 shutdown), `thermalHeadroom`, `availMemMb`, `lowMemory`, `javaHeapMb`, `nativeHeapMb`, `freeStorageMb`, `traceBytes`, `traceDropped` |
+| `perf` | every 10 s of drawn frames | `frames`, `fps`, `frameMsMean`, `frameMsP95`, `frameMsMax` (time inside the GL frame callback, tracing included), `mlBusyShare` (frames with a capture being analysed), `traceQueue`, `traceDropped`, `traceMsMean`, `traceMsMax` (GL time the trace itself took per frame), `windowS` |
+| `trace_error` | a trace file, sensor or sample cannot be opened or taken | `site` (`dir`, `open:<file>`, `write:<file>`, `sensor:<type>`, `depth_acquire`, `point_cloud`, `gl`), `error` |
+
+### Trace files
+
+`trace/<sessionId>/`, plain CSV with a header row, `.` as decimal point, empty field = no value. Column 1 `t` is epoch ms; column 2 `ns` is `SystemClock.elapsedRealtimeNanos()` (for sensors, the event's own timestamp, the same clock on the Pixel 8), so the files line up with each other and with `events.jsonl`.
+
+| File | Rate | Columns |
+| --- | --- | --- |
+| `pose.csv` | 10 Hz while frames are drawn | `t, ns, tracking` (ARCore state), `failure` (failure reason, empty when none), `wx, wy, wz, qx, qy, qz, qw` (`camera.pose` in the world frame, empty when not tracking), `located` (1/0), `mx, my, mz` (camera in the map frame), `myaw` (viewing direction in the map frame, degrees, the `Pose4.yaw` convention for a frame looking along -Z), `metersSinceFix, speed` (m/s), `turnRate` (deg/s; both from the previous row, empty across a tracking gap), `screen, room` (current room id), `query` (active query id) |
+| `sensors.csv` | `acc` and `gyro` 50 Hz, `mag` 10 Hz, `baro` 1 Hz (x = hPa), `light` on change, at most 5 Hz (x = lux) | `t, ns, type, x, y, z, accuracy`. Listeners run on a background thread, registered in onResume and removed in onPause; Android delivers faster than asked when another client (ARCore) runs the sensor fast, so each type is thinned by its own clock to its rate. A missing sensor gives one `trace_error` |
+| `depth.csv` | 2 Hz | `t, ns, ok` (1 when the 16-bit depth image was acquired), `w, h, validShare` (depth > 0), `usableShare` (0.2–4.0 m), `median, p10, p90` (valid pixels, metres), `centre` (median of the central 5×5) — all on every 4th pixel in both directions except `centre`, and empty when `ok` is 0 — `points` (feature points this frame), `planes, planeArea` (tracked planes, Σ extentX × extentZ in m²), `lightIntensity` (ARCore pixel intensity when the estimate is valid), `speed, turnRate` (of the latest pose row). The depth image is closed at once. During a scan, a frame that tried a keyframe takes no depth sample (it moves to the next frame) |
+| `guidance.csv` | 5 Hz while a search is active | `t, ns, query, mode, resolvable, distance, bearingDeg` (+ right), `elevationDeg` (+ up; all from the display-oriented camera to the remembered position, empty without a position or tracking), `routeM, straightM, inView` (the item is where the overlay draws its ring, inside the margins it keeps clear), `ringX, ringY` (that screen position in view pixels; computed in every mode, the ring itself is drawn only in NEAR) |
+
+One writer thread owns the files: the GL and sensor threads only format a line (in a reused `StringBuilder`, no `String.format`) and offer it to a bounded queue of 8192 lines that never blocks (a full queue drops the line and counts it in `traceDropped`). Files are flushed every 2 s and on pause. Light estimation was already `AMBIENT_INTENSITY` (ARCore's default; the app never changed it), so `lightIntensity` needed no configuration change; `ar_config.lightEstimationMode` records it.
+
+### Analysis
+
+`python3 analysis/trace_summary.py findback_data` writes one Markdown report and two plots per traced session to `analysis/out/` (git-ignored); see `analysis/README.md`. Sessions without a trace are skipped unless named with `--session`.
 
 ## Known limits
 

@@ -2,6 +2,26 @@
 // Based on the ARCore ml_kotlin sample (Apache 2.0, Google LLC).
 apply plugin: 'com.android.application'
 
+// v0.7: the git commit the app is built from, logged as `session_start.appCommit`.
+// "-dirty" when tracked files differ from it; "unknown" without git.
+def gitCommit = { ->
+    try {
+        def hash = providers.exec {
+            commandLine 'git', 'rev-parse', '--short', 'HEAD'
+            ignoreExitValue = true
+        }.standardOutput.asText.get().trim()
+        if (!hash) return 'unknown'
+        def changes = providers.exec {
+            // --no-optional-locks: read only, never refreshes the index
+            commandLine 'git', '--no-optional-locks', 'status', '--porcelain', '--untracked-files=no'
+            ignoreExitValue = true
+        }.standardOutput.asText.get().trim()
+        return changes ? hash + '-dirty' : hash
+    } catch (Exception ignored) {
+        return 'unknown'
+    }
+}()
+
 android {
     namespace "edu.cs6301.findback"
     compileSdkVersion 37
@@ -11,8 +31,12 @@ android {
         minSdkVersion 24
         targetSdkVersion 37
         versionCode 1
-        versionName '0.1'
+        versionName '0.7'
         ndk { abiFilters 'arm64-v8a' }
+        buildConfigField 'String', 'GIT_COMMIT', "\"${gitCommit}\""
+    }
+    buildFeatures {
+        buildConfig true
     }
 
     buildTypes {

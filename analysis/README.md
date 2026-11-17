@@ -30,7 +30,14 @@ python3 analysis/test_analysis.py
 
 # 9. Synthetic logs, for testing the code only (written to the system temp directory)
 python3 analysis/synth_generate.py
+
+# 10. v0.7 detailed trace: one report per traced session (Markdown and plots in analysis/out/)
+python3 analysis/trace_summary.py findback_data
+python3 analysis/trace_summary.py findback_data --session ab12cd34 --no-plots
+python3 analysis/test_trace_summary.py      # its tests (a few seconds)
 ```
+
+`trace_summary.py` needs numpy, pandas and (for the plots) matplotlib. With pytest installed, `python3 -m pytest analysis -q` runs both test files.
 
 `paper_figures.py`, `synth_generate.py` and the tests need numpy, matplotlib, scipy and scikit-learn. `evaluate.py`, `make_trial_sheet.py` and `power_measure.py` use the standard library only.
 
@@ -149,6 +156,32 @@ On the Pixel 8 user build, `dumpsys powerstats` lists the rails but prints no en
 ## Tests
 
 `python3 analysis/test_analysis.py` (add `-k word` to select tests). The centre is a hand-built log of eleven paired queries in which the count of every outcome class under every policy is worked out by hand in the comments, then checked on the arrays and through the whole pipeline. Other tests cover the 0.30 m rule, the oracle and random baselines (the latter against a simulation), the threshold sweep, AUC and threshold choice, the clustered bootstrap (whole clusters, width, coverage), that the learned policy never scores a query it was trained on, the operating point chosen on dev (by hand and by brute force), the what-if formulas against hand-computed values and at both ends (AUC 0.5 is the random-capture line of the replay, AUC 1 its oracle), the frame-staleness AUC (pair by pair), that a frame-only score cannot see the world signals, the age-only policy (capture by capture), the confirmation shares, guidance across rooms, record history, the margin rule, E1 grouping, cost and energy, the power-trace parser, every way of marking synthetic data, the refusal to write under `paper/`, the trial sheet's mix and independence, and `evaluate.py` against its saved output on the pilot data.
+
+## trace_summary.py
+
+Reads the v0.7 detailed trace (`FindBack/docs/PLAN_v0.7_trace.md`): the new events in `events.jsonl` and the CSV files in `trace/<session>/`. For each session with a trace folder it prints a Markdown report and writes it to `--out` (default `analysis/out/`, which git ignores: the trajectory plot is a floor plan of the home) as `trace_summary_<session>.md`, with `trace_<session>_trajectory.png` (top view coloured by tracking state and by usable depth share) and `trace_<session>_timeline.png` (speed and usable depth over time). A session without a trace (setting off, or an older app) is left out unless named with `--session`; it then gets the sections that come from events only. Nothing in the data folder is changed.
+
+| Section | From | What |
+| --- | --- | --- |
+| Session | `session_start`, `ar_config`, `ui_screen`, `ui_action`, `ui_search`, `app_pause`/`app_resume` | Duration and paused time, app version and commit, ARCore version, camera configuration, time per screen (paused time left out), button and control counts, dialog answers, Items searches (length and empty results only) |
+| Messages | `ui_message` | Every banner text with its count, most frequent first, and the screens it appeared on |
+| Rejected captures and locks | `capture_rejected`, `register`, `hit_rejected`, `lock_attempt` | Refusals by stage and reason (median of the value, such as the depth), refused registration taps per saved item, Lock success rate by kind, presses per successful lock, failure reasons, first-press success |
+| Tracking | `pose.csv`, `tracking_lost` | Losses (tracking row followed by a non-tracking row), lost time and share of the traced time, lost time by failure reason |
+| Motion | `pose.csv` | Metres walked (horizontal, tracking only, steps over 0.5 m left out), speed percentiles, time still (< 0.05 m/s), slow, walking (>= 0.3 m/s), turn rate |
+| Depth | `depth.csv` | Share of samples without a depth image, mean usable share (0.2–4 m) and valid share by motion class and by turn rate (< 10, 10–30, 30–60, >= 60 deg/s) |
+| Scene | `depth.csv` | Feature points per frame, tracked planes and plane area percentiles |
+| Light | `sensors.csv` (`light`), `depth.csv`, `verify` | Lux percentiles, ARCore pixel intensity, each verification's similarity against the last lux sample (at most 60 s old), rank correlation with 5 or more |
+| Performance | `perf`, `device_state`, `trace_error`, ML events | fps median and 5th percentile over the 10 s windows, frame time mean and p95, trace time on the GL thread, ML latencies (`register`, `verify`, `scan_keyframe`, `model_loaded`), battery drain per hour over stretches not charging, current, battery temperature, maximum thermal status, trace lines dropped, and each trace file's rows, size and rows per traced second against its nominal rate |
+| Scan | `scan_*` events | Keyframes, detections kept and dropped by reason, depth self-check error |
+| Findings | all of the above | Flags from the constants at the top of the script |
+
+Findings thresholds (constants at the top of `trace_summary.py`): tracking lost more than 5% of the traced time; usable depth while walking below 50%; no depth image in more than 20% of the depth samples; fps 5th percentile below 20; median window's frame time p95 above 50 ms; thermal status moderate (2) or above; any trace line dropped; any trace error; more than 3 refused registration taps per saved item (or more than 3 with none saved); fewer than half of the Lock presses succeeding; scan depth check median above 10 cm. Each is a strict bound: a value exactly at it is not flagged.
+
+Time is taken from the pose rows (10 Hz while the app is resumed): the interval to the next row, with gaps over 0.5 s counted as paused. A file that ends without a line break ends with a line the app did not finish (it was killed): that line is dropped.
+
+`fb_load.py`, `evaluate.py` and `paper_figures.py` read only the event types they know, so the new events change none of their results; `test_trace_summary.py` checks this on the hand-built E3 log with every new event added.
+
+`test_trace_summary.py`: each section on small traces built in a temporary folder (time per screen with a pause, message order, refusal and lock counts, tracking losses and lost time by reason, metres walked with a tracking jump left out, depth by motion and turn rate, light against verifications, battery drain, thermal status, dropped lines, the scan section), the thresholds at and just past their bounds, a session without a trace, a cut-off last line, the whole command with its files and plots, and that `fb_load` and `evaluate.py` give the same result with the new events in the log.
 
 ## synth_generate.py
 
