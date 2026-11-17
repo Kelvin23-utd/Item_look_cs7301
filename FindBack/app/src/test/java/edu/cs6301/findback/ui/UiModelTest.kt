@@ -148,6 +148,9 @@ class UiModelTest {
     assertEquals("Verify", buttons(f).primary?.label)
     // No position now: Verify is hidden, never greyed out.
     assertEquals(Action.DONE to null, actions(f.copy(resolvable = false)))
+    // Not located and no position: Locate is the primary button (no spots: nothing to locate with).
+    assertEquals(Action.DONE to Action.LOCATE, actions(f.copy(resolvable = false, located = false)))
+    assertEquals(Action.DONE to null, actions(f.copy(resolvable = false, located = false, hasSpots = false)))
     // PAIRED after its capture: Done becomes the primary button.
     assertEquals(null to Action.DONE, actions(f.copy(verifyAllowed = false)))
     assertEquals(null to Action.DONE, actions(f.copy(verifyAllowed = false, resolvable = false)))
@@ -163,7 +166,7 @@ class UiModelTest {
   fun statusPill() {
     assertEquals(Pill("Kitchen", Tone.GOOD, true), UiModel.pill(ready))
     assertEquals(Pill("Which room?", Tone.WARN, true), UiModel.pill(ready.copy(roomName = null)))
-    assertEquals(Pill("Not located", Tone.WARN, true), UiModel.pill(ready.copy(located = false)))
+    assertEquals(Pill("Not located", Tone.WARN, false), UiModel.pill(ready.copy(located = false)))
     assertEquals(Pill("No home yet", Tone.MUTED, false), UiModel.pill(UiInput()))
     assertEquals(Pill("Tracking lost", Tone.BAD, true), UiModel.pill(ready.copy(tracking = false)))
     assertEquals(Pill("Tracking lost", Tone.BAD, false), UiModel.pill(UiInput(tracking = false)))
@@ -204,8 +207,9 @@ class UiModelTest {
       UiModel.guideStatus(g.copy(recommend = true)).text,
     )
     val notLocated = UiModel.guideStatus(g.copy(located = false, resolvable = false))
-    assertEquals("Not located: press Locate", notLocated.text)
-    assertTrue(notLocated.showLocate)
+    // Said by the instruction line, with Locate on the bottom bar: no status line, no card button.
+    assertEquals("", notLocated.text)
+    assertFalse(notLocated.showLocate)
     assertFalse(UiModel.guideStatus(g.copy(located = false, resolvable = false, hasSpots = false)).showLocate)
     // A same-session item can be checked while not located: the Locate button stays for the route.
     val anchorOnly = UiModel.guideStatus(g.copy(located = false, resolvable = true))

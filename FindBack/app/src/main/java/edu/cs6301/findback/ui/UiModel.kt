@@ -173,6 +173,8 @@ object UiModel {
         when {
           // PAIRED after its capture: Done is the next step.
           !i.verifyAllowed -> BottomButtons(null, done)
+          // No position because not located: locating is the next step, so it is the primary button.
+          !i.resolvable && !i.located && i.hasSpots -> BottomButtons(done, UiButton(Action.LOCATE, "Locate"))
           // No position now: a capture cannot be taken.
           !i.resolvable -> BottomButtons(done, null)
           else -> BottomButtons(done, UiButton(Action.VERIFY, if (i.studyMode && i.policyRecommends) "Verify ★" else "Verify"))
@@ -191,7 +193,8 @@ object UiModel {
     when {
       !i.tracking -> Pill("Tracking lost", Tone.BAD, i.hasMap)
       !i.hasMap -> Pill("No home yet", Tone.MUTED, false)
-      !i.located -> Pill("Not located", Tone.WARN, true)
+      // Not located: a tap locates (MainView), so no room-picker arrow.
+      !i.located -> Pill("Not located", Tone.WARN, false)
       i.roomName == null -> Pill("Which room?", Tone.WARN, true)
       else -> Pill(i.roomName, Tone.GOOD, true)
     }
@@ -221,7 +224,8 @@ object UiModel {
             locate,
             false,
           )
-        !g.resolvable -> GuideStatus("Verification needs a location: press Locate", Tone.MUTED, locate, false)
+        // Locate is then the bottom bar's primary button, not a card button.
+        !g.resolvable -> GuideStatus("Verification needs a location: press Locate", Tone.MUTED, false, false)
         g.near -> GuideStatus("Not verified yet: aim at the ring and tap Verify", Tone.NORMAL, locate, false)
         else -> GuideStatus("Not verified yet: walk closer; Verify once the ring is on the item", Tone.NORMAL, locate, false)
       }
@@ -229,8 +233,8 @@ object UiModel {
     return when {
       g.lastOutcome == OUTCOME_CONFIRMED -> GuideStatus("✓ Still here (just checked)", Tone.GOOD, locate, true)
       g.lastOutcome != null -> GuideStatus("? Could not confirm: it may still be here", Tone.WARN, locate, true)
-      !g.resolvable && !g.located ->
-        GuideStatus(if (g.hasSpots) "Not located: press Locate" else "Not located", Tone.MUTED, locate, false)
+      // The instruction line already says it and Locate is the primary button: no status line.
+      !g.resolvable && !g.located -> GuideStatus("", Tone.MUTED, false, false)
       !g.resolvable -> GuideStatus("No position on the home map, so it cannot be checked", Tone.MUTED, false, false)
       g.recommend -> GuideStatus("May have moved since it was last seen: press Verify when you see the ring", Tone.WARN, locate, false)
       else -> GuideStatus("Press Verify at the ring to check it is still there", Tone.NORMAL, locate, false)

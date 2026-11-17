@@ -167,6 +167,7 @@ Writes two fake data folders and fake power runs to the system temp directory (o
 | 0115c406 | Nov 16 | Xiao's first walk on v0.3 (one room, home spot, 3 items, 2 queries). Route guidance went from the route arrow to the ring; marker error 3.9 cm from a same-session anchor | Smoke test only |
 | 007cc164 | Nov 16 | Claude's v0.4 checks with the phone still (settings, item dialog, ground-truth list; one query ended with Skip) | Exclude |
 | 7a7718f6, c5b9a6ae, 735b0f23 | Nov 16 | Claude's v0.5 scan checks with the phone still, on a temporary map that was deleted afterwards (scan start and stop, detector load, summary) | Exclude |
+| 1925c109, acbda081 | Nov 16 | Claude's v0.6 screen checks with the phone still, on the user's map: one untagged search for "my phone" opened and left without an answer (no `query_end`), two refused taps (depth 43 m) | Exclude |
 
 None of these sessions has a study tag, so `paper_figures.py` uses none of them.
 

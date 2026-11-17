@@ -28,6 +28,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import edu.cs6301.findback.map.Localizer
 import edu.cs6301.findback.memory.ObjectRecord
@@ -99,7 +100,10 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
 
   init {
     list.adapter = adapter
-    list.setOnItemClickListener { _, _, i, _ -> shown.getOrNull(i)?.let { showSheet(it) } }
+    list.setOnItemClickListener { _, _, i, _ ->
+      hideKeyboard() // the item sheet should not open over the keyboard
+      shown.getOrNull(i)?.let { showSheet(it) }
+    }
     root.findViewById<View>(R.id.itemsClose).setOnClickListener { close() }
     search.addTextChangedListener(
       object : TextWatcher {
@@ -131,6 +135,7 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
     thumbs.clear()
     search.setText("")
     panel.visibility = View.VISIBLE
+    lightStatusBar(true) // dark status-bar icons on the white panel
     rebuild()
   }
 
@@ -139,6 +144,7 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
     hideKeyboard()
     search.clearFocus()
     panel.visibility = View.GONE
+    lightStatusBar(false)
     data = null
     actions = null
     thumbs.clear()
@@ -436,6 +442,10 @@ class ItemsPanel(private val activity: MainActivity, root: View) {
     dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
     dialog.show()
     edit.requestFocus()
+  }
+
+  private fun lightStatusBar(light: Boolean) {
+    WindowCompat.getInsetsController(activity.window, activity.window.decorView).isAppearanceLightStatusBars = light
   }
 
   private fun hideKeyboard() {

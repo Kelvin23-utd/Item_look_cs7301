@@ -173,11 +173,12 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       )
     surfaceView.setOnTouchListener { _, event -> gestures.onTouchEvent(event) }
 
-    // The pill picks the room when a map exists, otherwise it opens the menu.
+    // The pill picks the room when located, locates when not, and opens the menu without a map.
     statusPill.setOnClickListener {
       val st = renderer.uiState ?: return@setOnClickListener toast("Starting…")
       val map = st.map
       if (map == null) dialogs.showSheet(st)
+      else if (!st.located) dialogs.locate(st)
       else dialogs.pickRoom(map.rooms, st.currentRoomId) { id, newRoom -> renderer.requestPickRoom(id, newRoom, "chip") }
     }
     root.findViewById<View>(R.id.menuButton).setOnClickListener {
@@ -489,6 +490,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       )
     guideStatus.text = status.text
     guideStatus.setTextColor(toneColor(status.tone))
+    guideStatus.visibility = if (status.text.isEmpty()) View.GONE else View.VISIBLE
     guideOpensResult = status.opensResult
     guideLocate.visibility = if (status.showLocate && !q.measuring) View.VISIBLE else View.GONE
   }
@@ -541,6 +543,7 @@ class MainView(val activity: MainActivity, private val renderer: FindBackRendere
       if (locate) "Not located: press Locate first, or the new place is kept for this session only"
       else "Saving replaces the old place. Cancel keeps it."
     guideStatus.setTextColor(if (locate) AMBER else GREY)
+    guideStatus.visibility = View.VISIBLE // a search before may have hidden it
     guideLocate.visibility = if (locate) View.VISIBLE else View.GONE
   }
 
