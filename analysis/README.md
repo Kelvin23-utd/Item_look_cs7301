@@ -201,6 +201,8 @@ Writes two fake data folders and fake power runs to the system temp directory (o
 | 007cc164 | Nov 16 | Claude's v0.4 checks with the phone still (settings, item dialog, ground-truth list; one query ended with Skip) | Exclude |
 | 7a7718f6, c5b9a6ae, 735b0f23 | Nov 16 | Claude's v0.5 scan checks with the phone still, on a temporary map that was deleted afterwards (scan start and stop, detector load, summary) | Exclude |
 | 1925c109, acbda081 | Nov 16 | Claude's v0.6 screen checks with the phone still, on the user's map: one untagged search for "my phone" opened and left without an answer (no `query_end`), two refused taps (depth 43 m) | Exclude |
+| f52b04d2 | Nov 16 | The user's first scan walk on v0.6 (one Locate, one 69 s scan with 24 entries, five untagged searches). Summary in `analysis/notes/2026-11-16_first_scan_walk.md` | Untagged: not in the study numbers; use for pilot observations |
+| c8990ea7 | Nov 17 | Claude's v0.7 trace check with the phone locked: 5 s, no user actions | Exclude |
 
 None of these sessions has a study tag, so `paper_figures.py` uses none of them.
 
