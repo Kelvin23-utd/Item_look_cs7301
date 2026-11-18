@@ -1,0 +1,23 @@
+{
+ "_comment": "Copy to vlm_models.private.json (git-ignored) and fill in. The repository names the models only by these aliases. old_key: a former key used in run folder names (optional). gb: download size in GB (disk budget). limit: vLLM --limit-mm-per-prompt. ignore: repository files not downloaded (or null).",
+ "models": {
+  "model_a": {"old_key": null, "name": "<model name>", "repo": "<publisher>/<repository>", "rev": "<40-hex commit>",
+                 "params": "<parameters>", "precision": "<weights as served>", "gb": 0.0,
+                 "limit": {"image": 2, "video": 0}, "ignore": null},
+  "model_b": {"old_key": null, "name": "<model name>", "repo": "<publisher>/<repository>", "rev": "<40-hex commit>",
+                  "params": "<parameters>", "precision": "<weights as served>", "gb": 0.0,
+                  "limit": {"image": 2, "video": 0}, "ignore": null},
+  "model_c": {"old_key": null, "name": "<model name>", "repo": "<publisher>/<repository>", "rev": "<40-hex commit>",
+               "params": "<parameters>", "precision": "<weights as served>", "gb": 0.0,
+               "limit": {"image": 2, "video": 0}, "ignore": null},
+  "model_d": {"old_key": null, "name": "<model name>", "repo": "<publisher>/<repository>", "rev": "<40-hex commit>",
+                  "params": "<parameters>", "precision": "<weights as served>", "gb": 0.0,
+                  "limit": {"image": 2, "video": 0}, "ignore": null},
+  "judge_a": {"old_key": null, "name": "<model name>", "repo": "<publisher>/<repository>", "rev": "<40-hex commit>",
+                    "params": "<parameters>", "precision": "<weights as served>", "gb": 0.0,
+                    "limit": {"image": 2}, "ignore": null},
+  "judge_b": {"old_key": null, "name": "<model name>", "repo": "<publisher>/<repository>", "rev": "<40-hex commit>",
+                 "params": "<parameters>", "precision": "<weights as served>", "gb": 0.0,
+                 "limit": {"image": 2, "video": 0}, "ignore": null}
+ }
+}

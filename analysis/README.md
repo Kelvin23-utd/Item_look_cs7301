@@ -226,6 +226,86 @@ $PY analysis/test_bench.py
 
 The judging sheet embeds keyframes, so it and every other output stay in `analysis/out/` (git-ignored); `pair_scores.csv` names crops by key only. Only number tables go to `analysis/notes/`.
 
+## VLM naming (vlm_*.py)
+
+`VLM_NAMING_PLAN.md`: open vision-language models on the lab workstation name the stored items, judged against the names the user typed and by two judging models, with full profiling. The design (models, prompt, inputs, metrics, judging, contingencies) is fixed in `notes/2026-11-17_vlm_naming_design.md`; results in `notes/2026-11-17_vlm_naming_results.md`, every later change in `notes/2026-11-17_vlm_naming_changes.md`.
+
+**Model names stay private.** The repository names the models only by aliases: contestants `model_a` to `model_d`, judges `judge_a` (primary) and `judge_b`. Their repositories, pinned revisions, download sizes and serving limits are in `analysis/vlm_models.private.json` (git-ignored; template `vlm_models.example.json`), which every script reads at run time and the sync commands copy into the private folder on the GPU machine. Tests use a fake one.
+
+The workstation is reached by SSH. Its alias and the private folder there come from two environment variables and are never written to a file; the folder is one directory inside the account's own folder on the data disk, mode 700, laid out as `data/` (copied images), `code/`, `models/` (all weights), `env/` (Python environment with vLLM), `runs/<date>_<name>/` and `scratch/` (home, caches, temporary files). Only the images naming needs are copied (`analysis/out/vlm/package/`, about 4.5 MB: stored crops, 320-px copies, one marked keyframe per scan entry, the crops of other sightings), plus the pooled candidate names for the judges. Telemetry of vLLM and Hugging Face is off; weights come from the publishers' repositories at pinned revisions.
+
+```bash
+export FB_WORKSTATION=<ssh alias>                 # never committed
+export FB_WS_DIR='/data/$USER/fb_vlm'             # single quotes: $USER expands on the workstation
+PY=analysis/.venv-bench/bin/python
+D=backups/phone_files_2026-11-17_0008
+
+$PY analysis/vlm_prepare.py --data $D             # images and item lists in analysis/out/vlm (seconds)
+$PY analysis/vlm_baselines.py                     # phone, MobileCLIP2 and Track B names (needs bench_detect output)
+python3 analysis/vlm_ws.py setup                  # once: folder, environment with vLLM 0.33.0 (about 10 GB, 2 min)
+python3 analysis/vlm_ws.py status                 # who is on, load, GPU owners, the queue's STATUS
+for m in model_a model_b model_d model_c judge_a; do
+  python3 analysis/vlm_ws.py fetch $m             # pinned weights (refuses to pass the 80 GB disk budget)
+done
+python3 analysis/vlm_ws.py queue-start            # detached queue on the workstation: waits for a GPU nobody else
+                                                  #   uses (10 free minutes), runs every naming session, builds the
+                                                  #   judging pool, runs both judges, yields to other users, ends
+                                                  #   by itself when done or after 24 h
+python3 analysis/vlm_ws.py queue-status           # the six-line runs/STATUS and the log tail
+FB_WORKSTATION=<ssh alias> analysis/vlm_monitor.sh   # read-only view: GPU owners, our processes, STATUS
+python3 analysis/vlm_ws.py queue-stop             # stop early (the running session finishes its item first)
+python3 analysis/vlm_ws.py roundtrip model_a      # with the Mac connected: round trip through an SSH tunnel
+python3 analysis/vlm_ws.py pull                   # mirror the workstation's runs/ to analysis/out/vlm/ws_runs
+$PY analysis/vlm_report.py report --data $D --md analysis/notes/2026-11-17_vlm_naming_results.md \
+    --changes-file analysis/notes/2026-11-17_vlm_naming_changes.md
+python3 analysis/vlm_ws.py procs                  # must list nothing of ours (except a queue still waiting)
+python3 analysis/vlm_ws.py cleanup --yes          # removes the whole folder on the workstation
+python3 analysis/test_vlm.py                      # tests (standard library parts; the bench environment also
+$PY analysis/test_vlm.py                          #   runs the numpy/Pillow parts), a few seconds
+```
+
+**On a university Slurm cluster** (`vlm_cluster.py`; the same session and judging code, run as batch jobs that do not depend on the Mac). Host, folder and Slurm options come from the environment only; pulled text has the folder, user, account and node names replaced by placeholders. Job names, batch scripts, output files and run folders use the aliases, the server is started from a neutral weights path (`models/<alias>`) with its arguments in a file, so nothing other users of the cluster can list (queue, job details, process command lines) names a model.
+
+```bash
+export FB_CLUSTER=<ssh host of the login nodes>
+export FB_CLUSTER_DIR='<work storage>/$USER/fb_vlm'      # private folder (mode 700); $USER expands there
+export FB_SLURM_OPTS='-A <account> -q <qos> -p <gpu partition> --gres=gpu:<gpu type>:1'
+export FB_SLURM_CPU_OPTS='-A <account> -q <qos> -p <cpu partition>'   # install and downloads (need internet)
+export FB_CLUSTER_PYTHON='<path of a full Python 3.12 there (with ctypes)>'
+export FB_CLUSTER_PRE='<commands run first in every job: a CUDA toolkit on PATH, a host compiler that matches
+                       that Python's libstdc++>'           # vLLM JIT-builds a FlashInfer module at start-up
+
+python3 analysis/vlm_cluster.py check             # start estimate of a GPU job, free storage
+python3 analysis/vlm_cluster.py setup             # folder, env.sh, vLLM 0.33.0 environment (CPU job, uv)
+python3 analysis/vlm_cluster.py pack-env          # archive of the environment; every job unpacks it on node-local
+                                                  #   storage (importing from the network file system took minutes)
+python3 analysis/vlm_cluster.py fetch             # pinned weights, one CPU job per model (130 GB budget)
+python3 analysis/vlm_cluster.py submit --one-gpu  # one GPU job per contestant session; both judges wait for the
+                                                  #   contestants (Slurm dependencies), build the blind pool from
+                                                  #   the primary runs and judge it; --one-gpu runs Judge B on
+                                                  #   one large GPU (recorded)
+python3 analysis/vlm_cluster.py smoke model_a     # optional software test on a synthetic image (FB_SLURM_SMOKE_OPTS)
+python3 analysis/vlm_cluster.py jobs              # our jobs and the state of each run folder
+python3 analysis/vlm_cluster.py wait              # poll the queue every 3 minutes until our jobs are gone
+python3 analysis/vlm_cluster.py pull              # mirror runs/ to analysis/out/vlm/cluster_runs (sanitised)
+python3 analysis/vlm_cluster.py cancel            # cancel our queued or running jobs
+python3 analysis/vlm_cluster.py cleanup --yes     # delete the whole folder on the cluster
+```
+
+Which run counts: a model's *primary run* is its first complete run in time at any site; naming quality, the label-free signals and the judging pool use primary runs only. A later run of a model (for example Model A on the cluster) gives cost on its own hardware and a name-agreement check against the primary run. Every cost table has a site and GPU column and never combines sites; the round trip from the Mac exists for the workstation only.
+
+| Script | What it does |
+| --- | --- |
+| `vlm_common.py` | The aliases and the reader of the private model file, prompts and answer schemas (quoted in the design note), request bodies, a streaming HTTP client that times a request, the vLLM metrics reader, name normalisation, the human-reference match rule, same-name rule, the blind judge pool, Wilson intervals, exact McNemar, Cohen's kappa, energy integration. Standard library only; runs on every machine |
+| `vlm_prepare.py` | Item sets (tapped records, scan entries, other sightings) and the image package; the human reference and phone labels stay in `analysis/out/vlm/local/` on the Mac |
+| `vlm_baselines.py` | Phone detector label (offline EfficientDet-Lite0 for tapped crops), MobileCLIP2-S2 zero-shot over the household vocabulary, Track B detector names matched to the scan entries |
+| `vlm_ws.py` | The workstation over SSH through one shared connection: setup, sync, fetch, queue start/status/stop, round trip through `ssh -L`, single sessions by hand, pull (a mirror of `runs/`, with the workstation's paths and account replaced by placeholders), disk use, process check, cleanup |
+| `vlm_cluster.py` | The cluster over SSH: setup and downloads as CPU jobs, one GPU batch job per session with the judges chained by Slurm dependencies, job status, pull (sanitised), cancel, cleanup |
+| `vlm_remote.py` | Runs on the GPU machine: the workstation's queue (lock, 24 h limit, `runs/STATUS`, waits by NVML every 5 minutes, disk budget, contingencies, judging pool); the Slurm job driver (`job`: one session on the allocated GPU with the listed contingencies; judges build the pool from the primary runs first); and each session: idle-GPU check, a watchdog that yields to another account's GPU process after the item in flight, GPU power/energy/memory sampler (NVML, 100 ms), vLLM server bound to 127.0.0.1 and always stopped in a `finally` block, sequential, cross-view, concurrency and ping phases, judging |
+| `vlm_report.py` | `pool`: blind judging pool from the primary runs. `report`: every table of the results note (primary and additional runs, one cost row per site) and `analysis/out/vlm/quality_cost.png` |
+| `vlm_monitor.sh` | Read-only view of the workstation for a person: GPU owners, our processes, the queue's STATUS, newest log |
+| `test_vlm.py` | The aliases and former keys, primary and additional runs across sites, the judge run that judged the primary pool, the cluster's pool equal to the Mac's, sanitising of cluster text, the queue's STATUS format, the yield check and the choice of the latest finished run, singulars and normalisation, head words, the match and same-name rules, answer and verdict parsing, the pool's independence of method order and its blindness, request bodies, the metrics reader, every statistic against hand-worked values, energy integration, the report's counts on a hand-built run, Track B box matching, frame marking geometry, path sanitising |
+
 ## Session log
 
 | Session | Date | What | Use in study |
