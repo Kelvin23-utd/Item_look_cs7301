@@ -7,6 +7,9 @@ cluster, started by vlm_cluster.py), inside the experiment's private folder.
     python vlm_remote.py session MODEL --run DIR    # serve MODEL, run every naming phase, stop
     python vlm_remote.py judge JUDGE --run DIR      # serve a judge, judge the pool, stop
     python vlm_remote.py queue                      # detached: wait for free GPUs, run every remaining session
+    python vlm_remote.py queue --models M ... [--until 2026-11-23T23:59]
+                                                    # only these contestants (additional runs: no judge, no
+                                                    #   judging pool); give up at that local time, not after 24 h
     python vlm_remote.py pool --out FILE --run DIR ... [--names-file FILE]   # the blind judging pool
     python vlm_remote.py job MODEL --name NAME      # inside a Slurm job: one session or judging session on
                                                     #   the allocated GPU, with the listed contingencies
@@ -945,13 +948,41 @@ def gpu_occupancy():
     return out
 
 
+def queue_order(models=None):
+    """The sessions the queue runs, in its order: every contestant, then the judges; with `models` (a
+    subset of the contestants), only those contestants in the queue's order, and no judge, so that no
+    judging pool is built (used for additional runs of models whose primary run is elsewhere)."""
+    if not models:
+        return CONTESTANTS + JUDGES
+    keys = {vc.canonical_key(m) for m in models}
+    bad = sorted(keys - set(CONTESTANTS))
+    if bad:
+        raise SystemExit("queue --models takes contestants only, not %s" % ", ".join(bad))
+    return [m for m in CONTESTANTS if m in keys]
+
+
+def parse_until(text):
+    """--until: a local date and time (YYYY-MM-DDTHH:MM) -> epoch seconds; it must lie in the future."""
+    try:
+        t = datetime.datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        raise SystemExit("--until: not a date and time like 2026-11-23T23:59: %r" % text)
+    if t <= time.time():
+        raise SystemExit("--until: %s is not in the future" % text)
+    return t
+
+
 class QueueStatus:
     """runs/STATUS: a few plain lines for a person to read."""
 
-    def __init__(self):
+    def __init__(self, deadline=None, only=None):
         self.path = os.path.join(RUNS_DIR, "STATUS")
         self.started = time.time()
-        self.deadline = self.started + QUEUE_HOURS * 3600
+        if deadline is None:
+            self.deadline, self.limit = self.started + QUEUE_HOURS * 3600, "%d h limit" % QUEUE_HOURS
+        else:
+            self.deadline, self.limit = deadline, "limit given at start"
+        self.only = only            # the contestants of a restricted queue (no judges), or None
         self.finished, self.attempts = [], []
         self.state, self.detail = "starting", ""
 
@@ -964,10 +995,11 @@ class QueueStatus:
         # six lines: analysis/vlm_monitor.sh shows the last six
         lines = ["state: " + self.state,
                  "detail: " + (self.detail or "-"),
-                 "times: queue started %s, last update %s, gives up at %s (24 h limit)" % (
+                 "times: queue started %s, last update %s, gives up at %s (%s)" % (
                      time.strftime(fmt, time.localtime(self.started)), time.strftime(fmt),
-                     time.strftime(fmt, time.localtime(self.deadline))),
-                 "sessions finished: " + (", ".join(self.finished) or "none"),
+                     time.strftime(fmt, time.localtime(self.deadline)), self.limit),
+                 "sessions finished%s: " % (" (this queue runs only %s; no judges)" % ", ".join(self.only)
+                                            if self.only else "") + (", ".join(self.finished) or "none"),
                  "interrupted or failed attempts (kept aside): " + (", ".join(self.attempts) or "none"),
                  "stop: python3 analysis/vlm_ws.py queue-stop  (or on the workstation: touch runs/STOP)"]
         tmp = self.path + ".tmp"
@@ -977,6 +1009,9 @@ class QueueStatus:
 
 
 def cmd_queue(args):
+    only = getattr(args, "models", None)
+    order = queue_order(only)
+    deadline = parse_until(args.until) if getattr(args, "until", None) else None
     os.makedirs(RUNS_DIR, exist_ok=True)
     lockf = open(os.path.join(RUNS_DIR, "queue.lock"), "a+")
     try:
@@ -990,7 +1025,7 @@ def cmd_queue(args):
     lockf.flush()
     if os.path.exists(STOP_FILE):
         os.remove(STOP_FILE)
-    st = QueueStatus()
+    st = QueueStatus(deadline, order if only else None)
     child = {"proc": None}
 
     def on_term(signum, frame):
@@ -1095,11 +1130,13 @@ def cmd_queue(args):
         out.close()
         return run_state(run) or "failed", run
 
-    log("queue: start (pid %d)" % os.getpid())
+    log("queue: start (pid %d)%s; gives up at %s" % (
+        os.getpid(), (", only " + " ".join(order) + ", no judges") if only else "",
+        time.strftime("%Y-%m-%d %H:%M", time.localtime(st.deadline))))
     clean_last = False
     code = 0
     try:
-        for mk in CONTESTANTS + JUDGES:
+        for mk in order:
             if latest_done(mk):
                 log("%s: already done" % mk)
                 continue
@@ -1199,7 +1236,8 @@ def cmd_queue(args):
         log("queue: all sessions finished")
     except KeyboardInterrupt:
         why = "stop requested" if os.path.exists(STOP_FILE) else (
-            "24 h limit reached" if time.time() > st.deadline else "terminated")
+            ("%s reached" % st.limit if deadline is None else "give-up time reached")
+            if time.time() > st.deadline else "terminated")
         st.set("stopped: " + why, "")
         log("queue: " + why)
         code = 3
@@ -1425,6 +1463,9 @@ def main(argv=None):
     sub.add_parser("gpus")
     q = sub.add_parser("queue")
     q.add_argument("--shared", action="store_true", help="run the allowed models in shared mode first")
+    q.add_argument("--models", nargs="+", choices=CONTESTANTS,
+                   help="only these contestants, in the queue's order (additional runs): no judge, no judging pool")
+    q.add_argument("--until", help="give up at this local time (YYYY-MM-DDTHH:MM) instead of after %d h" % QUEUE_HOURS)
     p = sub.add_parser("fetch")
     p.add_argument("model", choices=model_choices())
     p = sub.add_parser("serve")

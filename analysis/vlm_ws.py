@@ -11,6 +11,9 @@
     python3 analysis/vlm_ws.py fetch MODEL       # pinned weights into the folder's models/
     python3 analysis/vlm_ws.py queue-start       # detached queue on the workstation: waits for free GPUs and
                                                  #   runs every remaining session (survives the Mac sleeping)
+    python3 analysis/vlm_ws.py queue-start --models model_b model_c --until 2026-11-23T23:59
+                                                 # only these contestants (additional runs: no judge, no pool),
+                                                 #   giving up at that workstation time instead of after 24 h
     python3 analysis/vlm_ws.py queue-status      # the queue's runs/STATUS
     python3 analysis/vlm_ws.py queue-stop        # ask the queue (and its running session) to stop
     python3 analysis/vlm_ws.py roundtrip MODEL   # short session with the round trip from the Mac (needs the Mac)
@@ -34,6 +37,7 @@ The folder's layout (one directory, mode 700; `cleanup` removes exactly this dir
   scratch/   HOME, caches and temporary files of the processes started there
 """
 import argparse
+import datetime
 import json
 import os
 import re
@@ -202,12 +206,26 @@ def cmd_du(args):
 
 # ----------------------------------------------------------------------------- the detached queue
 
+def queue_flags(args):
+    """The queue's options as they go on its command line (aliases and a time only)."""
+    flags = ["--shared"] if args.shared else []
+    if args.models:
+        flags += ["--models"] + list(args.models)
+    if args.until:
+        try:
+            datetime.datetime.fromisoformat(args.until)
+        except ValueError:
+            sys.exit("--until: not a date and time like 2026-11-23T23:59: %r" % args.until)
+        flags += ["--until", args.until]
+    return " ".join(shlex.quote(f) for f in flags)
+
+
 def cmd_queue_start(args):
+    flags = queue_flags(args)
     cmd_sync(args)
     out = ssh_out('cd "$D/code"; if flock -n "$D/runs/queue.lock" true; then '
                   'nohup setsid python vlm_remote.py queue %s >> "$D/runs/queue.log" 2>&1 < /dev/null & sleep 8; '
-                  'else echo "a queue is already running"; fi; cat "$D/runs/STATUS" 2>/dev/null' % (
-                      "--shared" if args.shared else ""), check=False)
+                  'else echo "a queue is already running"; fi; cat "$D/runs/STATUS" 2>/dev/null' % flags, check=False)
     print(out.strip())
 
 
@@ -461,6 +479,10 @@ def main(argv=None):
     p = sub.add_parser("queue-start")
     p.add_argument("--shared", action="store_true", help="allowed models first share one GPU with another account's "
                    "idle process (memory cap, watchdog); the rest wait for a free GPU")
+    p.add_argument("--models", nargs="+", choices=vc.CONTESTANTS, help="only these contestants (additional runs): "
+                   "no judge and no judging pool on the workstation")
+    p.add_argument("--until", help="the queue gives up at this workstation time (YYYY-MM-DDTHH:MM) instead of "
+                   "after 24 h")
     p = sub.add_parser("queue-status")
     p.add_argument("--lines", type=int, default=8)
     for name in ("fetch", "rm-weights"):

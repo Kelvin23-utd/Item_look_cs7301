@@ -52,15 +52,18 @@ ps -u "$me" -o pid=,etime=,pcpu=,rss=,args= | grep -E "fb_vlm|vllm|vlm_" | grep 
 echo
 if [ -d "$dir" ]; then
   if [ -f "$dir/runs/STATUS" ]; then echo "Status file ($(date -r "$dir/runs/STATUS" '+%H:%M:%S')):"; sed 's/^/  /' "$dir/runs/STATUS" | tail -10; echo; fi
+  # Run folder names never go on a command line (other accounts can list those; a folder made before the
+  # aliases carries a model's former key): one find lists them, bash builtins format the times, and the
+  # newest log is read through a redirection.
   echo "Runs in $(basename "$dir")/runs (newest first):"
-  ls -1t "$dir/runs" 2>/dev/null | grep -v '^STATUS$' | head -10 | while read -r r; do
-    printf "  %-44s %s\n" "$r" "$(date -r "$dir/runs/$r" '+%b %d %H:%M')"
-  done
-  log=$(find "$dir/runs" -type f \( -name '*.log' -o -name '*.jsonl' \) -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
-  if [ -n "$log" ]; then
+  find "$dir/runs" -mindepth 1 -maxdepth 1 ! -name STATUS -printf '%T@ %f\n' 2>/dev/null | sort -rn | head -10 |
+    while read -r t r; do printf "  %-44s %(%b %d %H:%M)T\n" "$r" "${t%.*}"; done
+  newest=$(find "$dir/runs" -type f \( -name '*.log' -o -name '*.jsonl' \) -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1)
+  if [ -n "$newest" ]; then
+    log=${newest#* }
     echo
-    echo "Newest log: ${log#$dir/} (changed $(date -r "$log" '+%H:%M:%S'))"
-    tail -5 "$log" | cut -c1-160 | sed 's/^/  /'
+    echo "Newest log: ${log#$dir/} (changed $(printf '%(%H:%M:%S)T' "${newest%%.*}"))"
+    tail -5 < "$log" | cut -c1-160 | sed 's/^/  /'
   fi
   echo
   df -h "$dir" | awk 'NR==2{print "Disk: " $4 " free on " $6 " (" $5 " used)"}'

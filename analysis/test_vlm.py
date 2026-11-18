@@ -8,13 +8,20 @@ model file (a fake one with made-up identifiers is used).
 
 Every expected value is worked out by hand in the comments or checked against brute force.
 """
+import argparse
+import contextlib
+import datetime
+import io
 import json
 import math
 import os
 import random
 import shutil
+import signal
+import subprocess
 import sys
 import tempfile
+import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -427,6 +434,7 @@ def test_queue_status_and_yield_check():
         lines = open(os.path.join(d, "runs", "STATUS")).read().splitlines()
         assert len(lines) == 6 and lines[0].startswith("state: waiting") and "model_a (18:20)" in lines[3]
         assert "24 h limit" in lines[2] and "queue-stop" in lines[5]
+        assert lines[3] == "sessions finished: model_a (18:20)"           # an unrestricted queue says nothing more
         # check_yield: silent without a watchdog or a finding, raises once a foreign process was seen
         vr_.WATCH = None
         vr_.check_yield()
@@ -450,6 +458,117 @@ def test_queue_status_and_yield_check():
         assert os.path.basename(vr_.latest_done("oldkey_a")) == "2026-11-17_oldkey_a"
         assert vr_.latest_done("model_c") is None
     finally:
+        if old is None:
+            os.environ.pop("FBV", None)
+        else:
+            os.environ["FBV"] = old
+        sys.modules.pop("vlm_remote", None)
+        shutil.rmtree(d)
+
+
+def test_queue_model_filter_and_until():
+    import vlm_remote as vr_
+    import vlm_ws as vw
+    # without --models: every contestant in the queue's order, then both judges (unchanged)
+    assert vr_.queue_order() == vr_.queue_order(None) == vr_.CONTESTANTS + vr_.JUDGES
+    assert vr_.queue_order(None)[-2:] == ["judge_a", "judge_b"]
+    # with --models: those contestants only, in the queue's order (not the order given), and no judge
+    assert vr_.queue_order(["model_c", "model_b", "model_d"]) == ["model_b", "model_d", "model_c"]
+    assert vr_.queue_order(["model_b", "model_b"]) == ["model_b"]
+    for bad in (["judge_a"], ["model_b", "judge_b"], ["unknown_key"]):
+        try:
+            vr_.queue_order(bad)
+            raise AssertionError("no SystemExit for %s" % bad)
+        except SystemExit as e:
+            assert "contestants only" in str(e)
+    # the command line refuses a judge or a former key before anything starts (argparse choices)
+    for argv in (["queue", "--models", "judge_a"], ["queue", "--models", "oldkey_a"]):
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                vr_.main(argv)
+                raise AssertionError("no SystemExit for %s" % argv)
+            except SystemExit as e:
+                assert e.code == 2
+    # --until: a local time in the future; anything else stops before the queue starts
+    soon = (datetime.datetime.now() + datetime.timedelta(days=2)).replace(second=0, microsecond=0)
+    assert vr_.parse_until(soon.isoformat(timespec="minutes")) == soon.timestamp()
+    for bad in ("2020-01-01T00:00", "next week"):
+        try:
+            vr_.parse_until(bad)
+            raise AssertionError("no SystemExit for %r" % bad)
+        except SystemExit:
+            pass
+    # the Mac side passes the aliases and the time through, nothing else
+    ns = argparse.Namespace(shared=False, models=["model_b", "model_c", "model_d"], until="2026-11-23T23:59")
+    assert vw.queue_flags(ns) == "--models model_b model_c model_d --until 2026-11-23T23:59"
+    assert vw.queue_flags(argparse.Namespace(shared=False, models=None, until=None)) == ""
+    assert vw.queue_flags(argparse.Namespace(shared=True, models=None, until=None)) == "--shared"
+    try:
+        vw.queue_flags(argparse.Namespace(shared=False, models=None, until="23 Nov"))
+        raise AssertionError("no SystemExit")
+    except SystemExit:
+        pass
+
+
+def test_restricted_queue_runs_no_judge():
+    """queue --models model_c model_b model_d with every GPU free and every weight present: the three run in
+    the queue's order as sessions, no judge starts, no judging pool is written, the STATUS says so; a
+    second start skips them all, and skips Model A by its finished run under the former key."""
+    d = tempfile.mkdtemp(prefix="vlmtest_")
+    old = os.environ.get("FBV")
+    handlers = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        os.environ["FBV"] = d
+        sys.modules.pop("vlm_remote", None)
+        import vlm_remote as vr_
+        os.makedirs(os.path.join(d, "data"))
+        os.makedirs(vr_.RUNS_DIR)
+        first = os.path.join(vr_.RUNS_DIR, "2026-11-17_oldkey_a")
+        os.makedirs(first)
+        json.dump({"state": "done"}, open(os.path.join(first, "status.json"), "w"))
+        started = []
+
+        class FakeChild:
+            """Stands in for the session process: records its command line and finishes at once."""
+
+            def __init__(self, cmd, **kw):
+                started.append(cmd)
+                json.dump({"state": "done"}, open(os.path.join(cmd[cmd.index("--run") + 1], "status.json"), "w"))
+                self.pid = -1
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        vr_.subprocess = types.SimpleNamespace(Popen=FakeChild, STDOUT=subprocess.STDOUT)
+        vr_.gpu_occupancy = lambda: [(0, []), (1, [])]          # both GPUs without any process
+        vr_.snapshot_path = lambda key: d                       # weights present: nothing is fetched
+        vr_.POLL_S = 0
+        until = (datetime.datetime.now() + datetime.timedelta(days=5)).replace(second=0, microsecond=0)
+        args = argparse.Namespace(shared=False, models=["model_c", "model_b", "model_d"],
+                                  until=until.isoformat(timespec="minutes"))
+        assert vr_.cmd_queue(args) == 0
+        assert [c[2:4] for c in started] == [["session", "model_b"], ["session", "model_d"], ["session", "model_c"]]
+        assert not any("judge" in " ".join(c) for c in started)
+        assert not os.path.exists(os.path.join(d, "data", "judge_pool.json"))
+        today = datetime.date.today().isoformat()
+        for m in ("model_b", "model_c", "model_d"):                # run folders carry the alias
+            assert vr_.run_state(os.path.join(vr_.RUNS_DIR, "%s_%s" % (today, m))) == "done"
+        lines = open(os.path.join(vr_.RUNS_DIR, "STATUS")).read().splitlines()
+        assert len(lines) == 6 and lines[0] == "state: done: every session finished"
+        assert "gives up at %s (limit given at start)" % until.strftime("%m-%d %H:%M:%S") in lines[2]
+        assert lines[3].startswith("sessions finished (this queue runs only model_b, model_d, model_c; no judges): "
+                                   "model_b (")
+        # started again with Model A in the list: nothing runs (Model A's run has the former key)
+        del started[:]
+        args = argparse.Namespace(shared=False, models=["model_a", "model_b", "model_c", "model_d"], until=None)
+        assert vr_.cmd_queue(args) == 0 and started == []
+        assert "24 h limit" in open(os.path.join(vr_.RUNS_DIR, "STATUS")).read()
+    finally:
+        for s, h in handlers.items():
+            signal.signal(s, h)
         if old is None:
             os.environ.pop("FBV", None)
         else:
