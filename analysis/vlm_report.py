@@ -11,8 +11,9 @@ variant and repeat, the baselines, and the typed name of R-human items), dedupes
 normalisation and writes the blind judging pool to analysis/out/vlm/package/judge_pool.json (names
 only; no method, no hint which name was typed).
 
-`report` reads analysis/out/vlm/ (items_local, baselines, the mirrors ws_runs/ of the lab workstation
-and cluster_runs/ of a university cluster) and the phone's log (--data), and writes a number-only
+`report` reads analysis/out/vlm/ (items_local, baselines, the mirrors ws_runs/ of the lab workstation,
+cluster_runs/ of a university cluster and cluster2_runs/ of a second one, whose runs are additional only)
+and the phone's log (--data), and writes a number-only
 Markdown note and analysis/out/vlm/quality_cost.png. A model's primary run is its first complete run in
 time at any site; it gives the names. Every run gives cost rows for its own site and GPU. A judge run
 counts when the pool it judged is the pool of the primary runs. Models are named by their aliases.
@@ -44,8 +45,13 @@ BASELINES = ["phone", "clip", "yoloe11s", "owlv2"]
 STAGES = [("queue", "vllm:request_queue_time_seconds_sum"), ("prefill", "vllm:request_prefill_time_seconds_sum"),
           ("decode", "vllm:request_decode_time_seconds_sum"), ("engine", "vllm:e2e_request_latency_seconds_sum")]
 # Mirrors of the GPU machines' runs/ folders: (folder under analysis/out/vlm, site)
-SITES = [("ws_runs", "workstation"), ("cluster_runs", "cluster")]
-SITE_TEXT = {"workstation": "lab workstation", "cluster": "university cluster"}
+SITES = [("ws_runs", "workstation"), ("cluster_runs", "cluster"), ("cluster2_runs", "cluster2")]
+SITE_TEXT = {"workstation": "lab workstation", "cluster": "university cluster", "cluster2": "second university cluster"}
+# Sites whose runs are additional only (cost on their GPU and name agreement; changes note, item 21): a run there
+# is never a primary run, so it never enters naming quality, the label-free signals or the judging pool.
+ADDITIONAL_SITES = {"cluster2"}
+# Order of the sites in the plot's number table (the sites added later come last)
+SITE_ORDER = {"cluster": 0, "workstation": 1, "cluster2": 2}
 WS_GPU = "RTX 4090, 24 GB"        # the workstation's GPUs (design note); older runs did not record the name
 
 
@@ -73,8 +79,8 @@ def load_jsonl(path):
 
 
 def runs_of(out, key, suffix=""):
-    """Every finished run of a model in the mirrors (out/ws_runs, out/cluster_runs), first completed
-    first: dicts with dir, site, id ("site/folder"), t_end (the status time when the run ended) and
+    """Every finished run of a model in the mirrors (out/ws_runs, out/cluster_runs, out/cluster2_runs), first
+    completed first: dicts with dir, site, id ("site/folder"), t_end (the status time when the run ended) and
     status. A folder counts only when its name is exactly <date>_<key><suffix> (the alias or the former
     key), so set-aside attempts are never taken. The id uses the alias even for a former-key folder."""
     key = vc.canonical_key(key)
@@ -95,8 +101,9 @@ def runs_of(out, key, suffix=""):
 
 def primary_run(out, key):
     """The primary run of a model: its first complete run in time, at any site (rule fixed before the
-    cluster runs). Later runs give cost on their hardware and a name-agreement check only."""
-    r = runs_of(out, key)
+    cluster runs) except the additional-only sites. Later runs give cost on their hardware and a
+    name-agreement check only."""
+    r = [x for x in runs_of(out, key) if x["site"] not in ADDITIONAL_SITES]
     return r[0] if r else None
 
 
@@ -106,7 +113,8 @@ def hardware(run):
     used = st.get("gpus") or [0]
     gs = [g for g in (st.get("gpus_before") or []) if g.get("index") in used]
     if gs and gs[0].get("name"):
-        name = "%s, %.0f GiB" % (gs[0]["name"].replace("NVIDIA ", ""), gs[0]["mem_total_mib"] / 1024.0)
+        name = "%s, %.0f GiB" % (gs[0]["name"].replace("NVIDIA ", "").replace("GeForce ", ""),
+                                 gs[0]["mem_total_mib"] / 1024.0)
     elif run["site"] == "workstation":
         name = WS_GPU
     else:
@@ -156,11 +164,11 @@ class Results:
         # primary or additional, gives cost on its own hardware
         self.runs, self.extra_runs, self.run_dirs = {}, {}, {}
         for m in CONTESTANTS:
-            rs = runs_of(out, m)
-            if rs:
-                self.runs[m] = load_run(out, rs[0], m)
-                self.run_dirs[m] = rs[0]["dir"]
-                self.extra_runs[m] = [load_run(out, r, m) for r in rs[1:]]
+            p = primary_run(out, m)
+            if p:
+                self.runs[m] = load_run(out, p, m)
+                self.run_dirs[m] = p["dir"]
+                self.extra_runs[m] = [load_run(out, r, m) for r in runs_of(out, m) if r["dir"] != p["dir"]]
         self.models = [m for m in CONTESTANTS if self.runs.get(m, {}).get("rows")]
         # judges: the first finished run whose pool is the pool of the primary runs
         self.expected_pool = vc.judge_pool(self.manifest, vc.pool_names(
@@ -168,7 +176,7 @@ class Results:
         self.pool_frame = {p["item"]: p["with_frame"] for p in self.expected_pool}
         self.judge_notes = {}
         for j in JUDGES:
-            cands = runs_of(out, j)
+            cands = [r for r in runs_of(out, j) if r["site"] not in ADDITIONAL_SITES]
             for r in cands:
                 run = load_run(out, r, j)
                 if run["pool"] and run["pool"].get("items") == self.expected_pool and run["judg"]:
@@ -427,13 +435,29 @@ def report(R, args):
       "wide; differences inside them are not shown. Every number in a column marked *model-judged* comes from "
       "a judging model, not from a person.")
     w("")
-    w("**Sites and runs.** Sessions ran at two sites: the lab workstation of the design (RTX 4090, 24 GB) and a "
-      "university cluster (one GPU type for every cluster session). Naming quality and the label-free signals come "
+    later = sorted({(SITE_ORDER.get(x["site"], 9), x["site"]) for m in R.models for x in R.extra_runs.get(m, [])
+                    if x["site"] in ADDITIONAL_SITES})
+    later_hw = {s: sorted({x["hw"] for m in R.models for x in R.extra_runs.get(m, []) if x["site"] == s})
+                for _, s in later}
+    if not later:
+        sites = ("Sessions ran at two sites: the lab workstation of the design (RTX 4090, 24 GB) and a university "
+                 "cluster (one GPU type for every cluster session).")
+    else:
+        sites = ("Sessions ran at %s sites: the lab workstation of the design (RTX 4090, 24 GB), a university "
+                 "cluster (one GPU type for every cluster session) and %s." % (
+                     {3: "three", 4: "four"}.get(2 + len(later), str(2 + len(later))), " and ".join(
+                     "a %s (%s; additional runs only, for cost on that GPU and name agreement)" % (
+                         SITE_TEXT[s], " / ".join(later_hw[s])) for _, s in later)))
+    w("**Sites and runs.** %s Naming quality and the label-free signals come "
       "from each model's *primary run*, its first complete run in time (rule fixed before the cluster runs); the "
       "judging pool was built from the primary runs. A later run of a model is used only for cost on its own "
       "hardware and for the agreement of its names with the primary run. Every cost row names its site and GPU; "
       "numbers of different sites are never combined. The design question (phone plus a local workstation) is "
-      "answered by the RTX 4090 rows where they exist; the cluster rows compare all four contestants on one GPU type.")
+      "answered by the RTX 4090 rows where they exist; the cluster rows compare all four contestants on one GPU "
+      "type.%s" % (sites, "".join(
+          " The %s's rows give the cost of the contestants on its GPU (%s) with the design's serving settings; they "
+          "are never merged with the workstation's or the first cluster's rows." % (SITE_TEXT[s], " / ".join(later_hw[s]))
+          for _, s in later)))
     w("")
     nR, nRh, nS, nSf = (len(R.ids(x)) for x in ("R", "Rh", "S", "Sf"))
     nV = sum(1 for v in R.items.values() if v["set"] == "V")
@@ -445,7 +469,8 @@ def report(R, args):
     att = []
     for sub, site in SITES:
         for a in sorted(glob.glob(os.path.join(R.out, sub, "*_*_*"))):
-            if re.search(r"_(contaminated|failed|error|stopped|attempt|busy|nofit|envfault|cancelled)(_\d+)?$", os.path.basename(a)):
+            if re.search(r"_(contaminated|failed|error|stopped|attempt|busy|nofit|envfault|cancelled|preempted|"
+                         r"interrupted)(_\d+)?$", os.path.basename(a)):
                 att.append((site, a))
     if att:
         w("Sessions not used (kept on disk, listed for the record; they did not finish, or their timing was taken "
@@ -803,7 +828,9 @@ def report(R, args):
       "process; its energy is measured on a GPU that also holds the other (idle) process, against the power measured "
       "right before loading. On the cluster, the Python environment and the weights are read from its network file "
       "system, which makes start-up there much slower than on the workstation; the start-up columns of the two sites "
-      "are not comparable.")
+      "are not comparable." + "".join(
+          " The %s reads the Python environment and the weights from its own network file system, so its start-up "
+          "column is comparable with neither of the other sites." % SITE_TEXT[s] for _, s in later))
     w("")
     w("### Batched throughput (crop-full, 88 requests = two passes over R and S)")
     w("")
@@ -900,13 +927,19 @@ def plot_rows(R, cost):
             k, _, _, _, n = judged(R, J, R.vlm_names(m, v), ids)
             rows.append((m, v, c["run"]["label"], rid, k, n, c[v]["lat"], c[v]["energy"]))
     order = {m: i for i, m in enumerate(CONTESTANTS)}
-    rows.sort(key=lambda r: (r[3].split("/")[0] != "cluster", order[r[0]], vc.VARIANTS.index(r[1])))
+    rows.sort(key=lambda r: (SITE_ORDER.get(r[3].split("/")[0], 9), order[r[0]], vc.VARIANTS.index(r[1])))
     return rows
+
+
+# Marker style of each site in the plot: filled (the first cluster: all four contestants on one GPU type),
+# open (the lab workstation), half-filled (the second cluster)
+SITE_MARKER = {"cluster": "filled", "workstation": "open", "cluster2": "half-filled"}
 
 
 def plot(R, cost, path):
     """Primary-judge strict score on S-frame against seconds and joules per item. Filled markers: the
-    cluster runs (all four contestants on one GPU type); open markers: the lab workstation's runs."""
+    cluster runs (all four contestants on one GPU type); open markers: the lab workstation's runs;
+    half-filled markers: the second cluster's runs."""
     rows = plot_rows(R, cost)
     if not rows:
         return False
@@ -934,11 +967,13 @@ def plot(R, cost, path):
             hw.setdefault(site, label)
             lo, hi = vc.wilson(k, n)
             y = 100 * k / n
-            filled = site == "cluster"
+            style = SITE_MARKER.get(site, "open")
+            filled = style == "filled"
+            kw = {"fillstyle": "bottom", "markerfacecoloralt": "white"} if style == "half-filled" else {}
             ax.errorbar(lat if idx == 6 else en, y, yerr=[[y - 100 * lo], [100 * hi - y]], fmt=markers[v],
-                        color=colors[m], mfc=colors[m] if filled else "white", ms=8, mec=colors[m] if not filled
-                        else "white", mew=1.2, elinewidth=1, alpha=0.9,
-                        label="%s, %s" % (LABEL[m], v) if ax is axes[0] and filled else None)
+                        color=colors[m], mfc=colors[m] if style != "open" else "white", ms=8,
+                        mec="white" if filled else colors[m], mew=1.2, elinewidth=1, alpha=0.9,
+                        label="%s, %s" % (LABEL[m], v) if ax is axes[0] and filled else None, **kw)
         ax.set_xscale("log")
         from matplotlib.ticker import FuncFormatter
         for axis_fmt in (ax.xaxis.set_major_formatter, ax.xaxis.set_minor_formatter):
@@ -950,7 +985,7 @@ def plot(R, cost, path):
     axes[0].set_ylabel("Named right, %% of S-frame (n = %d), model-judged" % len(ids), fontsize=9)
     axes[0].set_ylim(0, 100)
     fig.legend(loc="lower center", ncol=4, fontsize=7, frameon=False, bbox_to_anchor=(0.5, -0.14))
-    sub = "; ".join("%s: %s markers" % (hw[s], "filled" if s == "cluster" else "open") for s in sorted(hw))
+    sub = "; ".join("%s: %s markers" % (hw[s], SITE_MARKER.get(s, "open")) for s in sorted(hw))
     fig.suptitle("Naming quality (model-judged by %s%s) against cost per site; grey lines: baselines\n%s" % (
         LABEL[J], "" if J == PRIMARY_JUDGE else ", not the primary judge, which could not judge these items", sub),
         fontsize=9)

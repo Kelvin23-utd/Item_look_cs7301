@@ -296,7 +296,21 @@ python3 analysis/vlm_cluster.py cancel            # cancel our queued or running
 python3 analysis/vlm_cluster.py cleanup --yes     # delete the whole folder on the cluster
 ```
 
-Which run counts: a model's *primary run* is its first complete run in time at any site; naming quality, the label-free signals and the judging pool use primary runs only. A later run of a model (for example Model A on the cluster) gives cost on its own hardware and a name-agreement check against the primary run. Every cost table has a site and GPU column and never combines sites; the round trip from the Mac exists for the workstation only.
+**A second cluster** (changes note, item 21: the four contestants once each on an RTX 3090, as additional runs, no judges) uses the same script with a few more variables. Every job is submitted with `--no-requeue` and stops at once if Slurm restarts it anyway; an interrupted attempt is set aside under a tag and the session resubmitted into a fresh folder (`submit` refuses while a folder of the same name exists). Every remote command runs under `umask 077`; the folder is created with `mkdir -m 700`, and `sync` copies nothing unless the folder is mode 700 and ours.
+
+```bash
+export FB_CLUSTER_SITE=cluster2                   # site tag of the runs; mirror analysis/out/vlm/cluster2_runs
+export FB_CLUSTER_PYTHON='uv:3.12.8'              # a CPython that uv installs inside the folder
+export FB_CLUSTER_BOOT='<commands that put a python3 on PATH>'   # only to bootstrap uv
+export FB_CLUSTER_CONSTRAINTS=analysis/out/vlm/cluster_runs/2026-11-18_model_b/environment.txt
+                                                  # every package at exactly the first cluster's versions;
+                                                  #   setup compares the installed list with it
+export FB_CLUSTER_SCRUB='<more words to replace in pulled text>'
+python3 analysis/vlm_cluster.py submit --models model_a model_b model_c model_d --no-judges
+python3 analysis/vlm_cluster.py set-aside 2026-11-18_model_b preempted   # then submit that model again
+```
+
+Which run counts: a model's *primary run* is its first complete run in time at any site; naming quality, the label-free signals and the judging pool use primary runs only. A later run of a model (for example Model A on the cluster) gives cost on its own hardware and a name-agreement check against the primary run. The second cluster's runs are never primary runs, and no judge run there is used. Every cost table has a site and GPU column and never combines sites; the round trip from the Mac exists for the workstation only.
 
 | Script | What it does |
 | --- | --- |
@@ -304,11 +318,11 @@ Which run counts: a model's *primary run* is its first complete run in time at a
 | `vlm_prepare.py` | Item sets (tapped records, scan entries, other sightings) and the image package; the human reference and phone labels stay in `analysis/out/vlm/local/` on the Mac |
 | `vlm_baselines.py` | Phone detector label (offline EfficientDet-Lite0 for tapped crops), MobileCLIP2-S2 zero-shot over the household vocabulary, Track B detector names matched to the scan entries |
 | `vlm_ws.py` | The workstation over SSH through one shared connection: setup, sync, fetch, queue start/status/stop, round trip through `ssh -L`, single sessions by hand, pull (a mirror of `runs/`, with the workstation's paths and account replaced by placeholders), disk use, process check, cleanup |
-| `vlm_cluster.py` | The cluster over SSH: setup and downloads as CPU jobs, one GPU batch job per session with the judges chained by Slurm dependencies, job status, pull (sanitised), cancel, cleanup |
+| `vlm_cluster.py` | A cluster over SSH (a site tag per cluster, each with its own mirror): setup and downloads as CPU jobs (optionally a uv-installed CPython and every package held to another site's versions), one GPU batch job per session (never requeued) with the judges chained by Slurm dependencies, job status, setting interrupted attempts aside, pull (sanitised), cancel, cleanup |
 | `vlm_remote.py` | Runs on the GPU machine: the workstation's queue (lock, 24 h limit or a give-up time given with `--until`, `--models` for additional contestant runs without judges, `runs/STATUS`, waits by NVML every 5 minutes, disk budget, contingencies, judging pool); the Slurm job driver (`job`: one session on the allocated GPU with the listed contingencies; judges build the pool from the primary runs first); and each session: idle-GPU check, a watchdog that yields to another account's GPU process after the item in flight, GPU power/energy/memory sampler (NVML, 100 ms), vLLM server bound to 127.0.0.1 and always stopped in a `finally` block, sequential, cross-view, concurrency and ping phases, judging |
 | `vlm_report.py` | `pool`: blind judging pool from the primary runs. `report`: every table of the results note (primary and additional runs, one cost row per site) and `analysis/out/vlm/quality_cost.png` |
 | `vlm_monitor.sh` | Read-only view of the workstation for a person: GPU owners, our processes, the queue's STATUS, newest log |
-| `test_vlm.py` | The aliases and former keys, primary and additional runs across sites, the judge run that judged the primary pool, the cluster's pool equal to the Mac's, sanitising of cluster text, the queue's STATUS format, its model filter (only the listed contestants, in the queue's order, no judge and no pool, Model A skipped by its former-key run) and give-up time, the yield check and the choice of the latest finished run, singulars and normalisation, head words, the match and same-name rules, answer and verdict parsing, the pool's independence of method order and its blindness, request bodies, the metrics reader, every statistic against hand-worked values, energy integration, the report's counts on a hand-built run, Track B box matching, frame marking geometry, path sanitising |
+| `test_vlm.py` | The aliases and former keys, primary and additional runs across sites (a second cluster's runs never primary, own cost rows, plot order, three-site wording), the second cluster's site tag, job script guard, folder creation, setup with constraints and the comparison of installed versions, set-aside and extra scrub words, a restarted job never run, the judge run that judged the primary pool, the cluster's pool equal to the Mac's, sanitising of cluster text, the queue's STATUS format, its model filter (only the listed contestants, in the queue's order, no judge and no pool, Model A skipped by its former-key run) and give-up time, the yield check and the choice of the latest finished run, singulars and normalisation, head words, the match and same-name rules, answer and verdict parsing, the pool's independence of method order and its blindness, request bodies, the metrics reader, every statistic against hand-worked values, energy integration, the report's counts on a hand-built run, Track B box matching, frame marking geometry, path sanitising |
 
 ## Session log
 

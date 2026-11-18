@@ -1308,12 +1308,40 @@ def cmd_pool(args):
                     args.names_file)
 
 
+def node_record():
+    """One line about the machine of this job: node name, CPU model, CPUs of the job and of the node, and how
+    many jobs of other accounts were running on the same node when the job started (a count, no names), since
+    they share the node's CPUs, memory bandwidth and PCIe with our session."""
+    node = os.environ.get("SLURMD_NODENAME") or os.uname().nodename.split(".")[0]
+    cpu = "unknown"
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    cpu = line.split(":", 1)[1].strip()
+                    break
+    except OSError:
+        pass
+    others = "unknown"
+    if os.environ.get("SLURM_JOB_ID"):
+        try:
+            out = subprocess.run(["squeue", "-h", "-w", node, "-t", "R", "-o", "%i %u"], capture_output=True,
+                                 text=True, timeout=60).stdout
+            me = os.environ.get("USER") or ""
+            others = str(sum(1 for line in out.splitlines() if line.split()[1:] and line.split()[1] != me))
+        except Exception:  # noqa: BLE001
+            pass
+    return "node %s; cpu %s; job cpus %s of %d on the node; other accounts' running jobs on the node at start: %s\n" % (
+        node, cpu, os.environ.get("SLURM_CPUS_ON_NODE", "?"), os.cpu_count() or 0, others)
+
+
 def env_record(run, python=None):
-    """Python, GPU and package versions of this run (environment.txt in the run folder)."""
+    """Python, node, GPU and package versions of this run (environment.txt in the run folder)."""
     python = python or sys.executable
     with open(os.path.join(run, "environment.txt"), "w") as f:
         f.write("python %s; environment %s\n" % (sys.version.split()[0], "staged on node-local storage"
                                                   if python != sys.executable else "on the shared folder"))
+        f.write(node_record())
         for cmd in (["nvidia-smi", "--query-gpu=name,driver_version,memory.total,power.limit", "--format=csv"],
                     [python, "-m", "pip", "freeze"]):
             try:
@@ -1388,12 +1416,24 @@ def stage_env():
     return py, local
 
 
+def restarted():
+    """True when Slurm restarted this job (requeued after preemption or a node failure)."""
+    try:
+        return int(os.environ.get("SLURM_RESTART_COUNT") or 0) > 0
+    except ValueError:
+        return True
+
+
 def cmd_job(args):
     """Inside one Slurm job: one naming session (or judging session) on the GPU(s) Slurm allocated, retried
     with the design's listed settings when the server does not start. Exit 0 when the session finished or
     the model was dropped after every listed setting (as the design allows; a <name>.dropped file says so)."""
     key = vc.canonical_key(args.model)
     kind = "judge" if key in JUDGES else "session"
+    if restarted():
+        # a preempted job that Slurm put back in the queue: never resumed (its folder is set aside from the Mac)
+        log("this job was restarted by Slurm (count %s); not run" % os.environ.get("SLURM_RESTART_COUNT"))
+        return 3
     os.makedirs(RUNS_DIR, exist_ok=True)
     base = os.path.join(RUNS_DIR, args.name)
     left = slurm_time_left()

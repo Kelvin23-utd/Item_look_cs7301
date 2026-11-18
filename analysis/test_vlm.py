@@ -817,6 +817,197 @@ def test_cluster_slurm_names_and_sanitize():
         shutil.rmtree(d)
 
 
+@contextlib.contextmanager
+def _env(**kw):
+    """Set (value) or unset (None) environment variables for the block."""
+    old = {k: os.environ.get(k) for k in kw}
+    try:
+        for k, v in kw.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        yield
+    finally:
+        for k, v in old.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_second_cluster_site_jobs_and_setup():
+    import vlm_cluster as vcl
+    with _env(FB_CLUSTER_SITE=None):
+        assert vcl.site() == "cluster" and vcl.mirror().endswith(os.path.join("out", "vlm", "cluster_runs"))
+    with _env(FB_CLUSTER_SITE="cluster2"):
+        assert vcl.site() == "cluster2" and vcl.mirror().endswith(os.path.join("out", "vlm", "cluster2_runs"))
+        js = vcl.job_script("/w/u/fb_vlm", "2026-11-18_model_a", "python vlm_remote.py job model_a")
+        assert "export FB_SITE=cluster2\n" in js and "umask 077\n" in js
+        # a job that Slurm restarted stops before sourcing anything
+        assert js.index("SLURM_RESTART_COUNT") < js.index("env.sh") and "exit 3" in js
+    for bad in ("ws_runs", "cluster-2", "../x"):
+        with _env(FB_CLUSTER_SITE=bad):
+            try:
+                vcl.site()
+                raise AssertionError("no SystemExit for %r" % bad)
+            except SystemExit:
+                pass
+    # the private folder is created with mode 700 from the first moment
+    assert vcl.setup_folder_cmd().startswith('umask 077; mkdir -p -m 700 "$D" && [ "$(stat -c %a "$D")" = 700 ]')
+    with _env(FB_CLUSTER_PYTHON="uv:3.12.8"):
+        assert vcl.python_spec() == ("uv", "3.12.8")
+    with _env(FB_CLUSTER_PYTHON="/opt/x/bin/python3.12"):
+        assert vcl.python_spec() == ("path", "/opt/x/bin/python3.12")
+    with _env(FB_CLUSTER_PYTHON="uv:3.12"):
+        try:
+            vcl.python_spec()
+            raise AssertionError("no SystemExit")
+        except SystemExit:
+            pass
+    # the setup job: uv's CPython, every install held to the constraints, the venv's old parts moved aside
+    b = vcl.setup_body(("uv", "3.12.8"), ["vllm==0.33.0", "nvidia-ml-py==13.615.71"], True, "module load py")
+    assert '"$BOOT/bin/uv" python install 3.12.8' in b and "( module load py\n" in b
+    assert 'python -m uv pip install --python "$D/env/bin/python" -c "$D/env/constraints.txt" vllm==0.33.0 ' \
+           'nvidia-ml-py==13.615.71' in b
+    assert 'pip install -q --no-cache-dir -c "$D/env/constraints.txt" uv\n' in b and "date +%H%M%S" in b
+    b = vcl.setup_body(("path", "/p/python3.12"), ["vllm==0.33.0"], False)
+    assert "PY=/p/python3.12\n" in b and "constraints" not in b and "--upgrade uv" in b
+
+
+def test_constraints_from_an_environment_record():
+    import vlm_cluster as vcl
+    rec = ("python 3.12.8; environment staged on node-local storage\n"
+           "node <CL_NODE>; cpu X; job cpus 8 of 64 on the node; other accounts' running jobs on the node at start: 2\n"
+           "name, driver_version, memory.total [MiB], power.limit [W]\n"
+           "NVIDIA H200 NVL, 580.178.04, 143771 MiB, 600.00 W\n"
+           "Jinja2==3.1.6\nvllm==0.33.0\npydantic_core==1.13.1\ntorch==2.14.0\n")
+    want = vcl.constraint_lines(rec)
+    assert want == ["Jinja2==3.1.6", "pydantic_core==1.13.1", "torch==2.14.0", "vllm==0.33.0"]
+    assert vcl.canon("pydantic_core") == vcl.canon("Pydantic-Core") == "pydantic-core"
+    # the same set, spelled differently by pip: a match
+    assert vcl.compare_freeze(want, "jinja2==3.1.6\npydantic-core==1.13.1\ntorch==2.14.0\nvllm==0.33.0\n") == \
+        ([], [], [])
+    # one version differs, one is missing, one is not in the list
+    got = "Jinja2==3.1.6\npydantic_core==1.13.2\nvllm==0.33.0\nuv==0.13.9\n"
+    assert vcl.compare_freeze(want, got) == (["torch"], ["uv"], [("pydantic-core", "1.13.1", "1.13.2")])
+
+
+def test_set_aside_and_scrub():
+    import vlm_cluster as vcl
+    c = vcl.set_aside_cmd("2026-11-18_model_b", "preempted", "142233")
+    assert 'mv "2026-11-18_model_b" "2026-11-18_model_b_preempted_142233"' in c
+    assert '"state": "done"' in c and "exit 4" in c          # a finished run is never set aside
+    for name, tag in (("2026-11-18_model_b", "done"), ("../x", "preempted"), ("2026-11-18_model_b; rm", "failed")):
+        try:
+            vcl.set_aside_cmd(name, tag, "142233")
+            raise AssertionError("no SystemExit for %r %r" % (name, tag))
+        except SystemExit:
+            pass
+    pats = vcl.replacements("/home/u1/scratch/fb_vlm", "/home/u1", "u1", set(), {"g-9-9"}, "clus2", set(),
+                            ["mfs", "campus"], ["/scr/clus2/u1/fb_vlm"])
+    d = tempfile.mkdtemp(prefix="vlmtest_")
+    try:
+        with open(os.path.join(d, "x.log"), "w") as f:
+            f.write("/scr/clus2/u1/fb_vlm/models and /home/u1/scratch/fb_vlm/runs on g-9-9 via mfs.campus.edu\n")
+        vcl.sanitize(d, pats)
+        assert open(os.path.join(d, "x.log")).read() == "<CL_DIR>/models and <CL_DIR>/runs on <CL_NODE> via <CL>.<CL>.edu\n"
+    finally:
+        shutil.rmtree(d)
+
+
+def test_second_cluster_runs_are_additional_only():
+    import vlm_report as vr
+    d = _fake_out()
+    try:
+        g3090 = "NVIDIA GeForce RTX 3090"
+        # model_b: a second-cluster run that even ended FIRST is never its primary run
+        _add_run(d, "cluster2_runs", "2026-11-18_model_b", 50.0, "model_b", {"inv:a": "beer stein"}, gpu=g3090,
+                 latency=2.0)
+        _add_run(d, "cluster_runs", "2026-11-18_model_b", 150.0, "model_b", {"inv:a": "coffee mug"},
+                 gpu="NVIDIA H200 NVL")
+        # model_a: workstation primary, then the first cluster, then the second cluster
+        _add_run(d, "cluster_runs", "2026-11-18_model_a", 200.0, "model_a", {"inv:a": "kitchen roll"}, gpu="NVIDIA H200 NVL")
+        _add_run(d, "cluster2_runs", "2026-11-18_model_a", 400.0, "model_a",
+                 {"inv:a": "paper towel roll", "inv:b": "book"}, gpu=g3090)
+        # model_c: only a second-cluster run -> no primary run, so not a model of the report at all
+        _add_run(d, "cluster2_runs", "2026-11-18_model_c", 300.0, "model_c", {"inv:a": "x"}, gpu=g3090)
+        # set aside after preemption: listed as not used, never taken
+        _add_run(d, "cluster2_runs", "2026-11-18_model_d_preempted_120000", 250.0, "model_d", {"inv:a": "x"},
+                 gpu=g3090, state="error")
+        for run in os.listdir(os.path.join(d, "cluster2_runs")):          # a 24 GiB card
+            p = os.path.join(d, "cluster2_runs", run, "status.json")
+            st = json.load(open(p))
+            st["gpus_before"][0]["mem_total_mib"] = 24576
+            json.dump(st, open(p, "w"))
+        # a judge run on the second cluster is never used
+        shutil.copytree(os.path.join(d, "cluster_runs", "2026-11-18_judge_a"),
+                        os.path.join(d, "cluster2_runs", "2026-11-18_judge_a"))
+        assert vr.primary_run(d, "model_b")["id"] == "cluster/2026-11-18_model_b"
+        assert vr.primary_run(d, "model_c") is None and vr.primary_run(d, "model_d") is None
+        R = vr.Results(d)
+        assert R.models == ["model_a", "model_b"]
+        assert [x["id"] for x in R.extra_runs["model_a"]] == ["cluster/2026-11-18_model_a", "cluster2/2026-11-18_model_a"]
+        x2 = R.extra_runs["model_b"][0]
+        assert x2["site"] == "cluster2" and x2["label"] == "second university cluster (RTX 3090, 24 GiB)"
+        # quality and the pool use primary runs only
+        assert R.names("model_b", "crop-full") == {"inv:a": "coffee mug"}
+        pool = {p["item"]: p["names"] for p in R.expected_pool}
+        assert "coffee mug" in pool["inv:a"] and "beer stein" not in pool["inv:a"]
+        # cost: own rows per site, never combined, primary first then later runs in time
+        assert [(m, r["id"]) for m, r in R.cost_runs()] == [
+            ("model_a", "workstation/2026-11-17_model_a"), ("model_a", "cluster/2026-11-18_model_a"),
+            ("model_a", "cluster2/2026-11-18_model_a"), ("model_b", "cluster/2026-11-18_model_b"),
+            ("model_b", "cluster2/2026-11-18_model_b")]
+        # name agreement with the primary run, crop-full: inv:a identical, inv:b identical, others missing
+        assert vr.run_agreement(R, "model_a", R.extra_runs["model_a"][1], ["crop-full"]) == (2, 2, 2)
+        # the judge: the first cluster's run, once its pool is the pool of the primary runs; never the second's
+        for sub in ("cluster_runs", "cluster2_runs"):
+            json.dump({"items": R.expected_pool}, open(os.path.join(d, sub, "2026-11-18_judge_a", "judge_pool.json"), "w"))
+        R = vr.Results(d)
+        assert R.judges == ["judge_a"] and R.runs["judge_a"]["site"] == "cluster"
+        cost = {}
+        for m, r in R.cost_runs():
+            cost[(m, r["id"])] = {"run": r, "crop-full": {"lat": 1.0, "energy": 2.0}}
+        sites = [row[3] for row in vr.plot_rows(R, cost)]
+        # the first cluster's rows, then the workstation's, then the second cluster's (added last)
+        assert sites == ["cluster/2026-11-18_model_a", "cluster/2026-11-18_model_b", "workstation/2026-11-17_model_a",
+                         "cluster2/2026-11-18_model_a", "cluster2/2026-11-18_model_b"]
+        L, _ = vr.report(R, argparse.Namespace(data=None))
+        text = "\n".join(L)
+        assert "Sessions ran at three sites" in text and "second university cluster (RTX 3090, 24 GiB; additional runs " \
+                                                     "only" in text
+        assert "- second university cluster, `2026-11-18_model_d_preempted_120000`: error" in text
+        assert "| Model B | second university cluster (RTX 3090, 24 GiB) | crop-full | 1 | 2.00 [2.00] |" in text
+        # without second-cluster runs the paragraph is the earlier one, word for word
+        shutil.rmtree(os.path.join(d, "cluster2_runs"))
+        L, _ = vr.report(vr.Results(d), argparse.Namespace(data=None))
+        assert "Sessions ran at two sites: the lab workstation of the design (RTX 4090, 24 GB) and a university " \
+               "cluster (one GPU type for every cluster session). Naming quality" in "\n".join(L)
+    finally:
+        shutil.rmtree(d)
+
+
+def test_restarted_job_is_never_run():
+    import vlm_remote as vr_
+    with _env(SLURM_RESTART_COUNT=None):
+        assert not vr_.restarted()
+    with _env(SLURM_RESTART_COUNT="0"):
+        assert not vr_.restarted()
+    with _env(SLURM_RESTART_COUNT="1"):
+        assert vr_.restarted()
+        before = os.path.exists(vr_.RUNS_DIR)
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert vr_.cmd_job(argparse.Namespace(model="model_a", name="2026-11-18_model_a", time_limit_s=60,
+                                                  gpus=None, pool_run=[], names_file=None)) == 3
+        assert os.path.exists(vr_.RUNS_DIR) == before          # nothing created
+    with _env(SLURM_RESTART_COUNT="x"):
+        assert vr_.restarted()                                  # unreadable: treated as restarted
+    with _env(SLURM_JOB_ID=None):
+        line = vr_.node_record()
+        assert line.startswith("node ") and line.endswith("on the node at start: unknown\n")
+
+
 def test_failed_judge_request_is_missing_data():
     import vlm_report as vr
     d = _fake_out()
