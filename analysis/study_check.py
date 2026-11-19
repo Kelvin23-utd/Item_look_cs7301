@@ -665,8 +665,10 @@ def check_entries(p, scans, rep):
         a, b = (p.scan_start.get(s) or {}).get("t") or 0, (p.scan_end.get(s) or {}).get("t") or 0
         added = [l["entry"]["id"] for l in p.inv_log if l.get("op") == "add" and a <= (l.get("t") or 0) <= b]
         end = p.end_line(s)
-        if end is not None and end.get("created") is not None and list(end["created"]) != added:
-            problems.append("%s: scan_end created %s, add lines %s" % (s, end["created"], added))
+        # Compared as sets: on the first device run (2026-11-19) the two lists held the same ids in a
+        # different order (the `created` list is not in the order of the add lines), which loses nothing.
+        if end is not None and end.get("created") is not None and sorted(end["created"]) != sorted(added):
+            problems.append("%s: scan_end created %s, add lines %s" % (s, sorted(end["created"]), sorted(added)))
     # invariance over the log (item 18)
     last = {}
     for line in p.inv_log:

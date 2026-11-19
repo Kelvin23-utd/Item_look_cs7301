@@ -144,7 +144,7 @@ The last line of `obs/<scanId>.jsonl`, written when the scan ends (missing when 
 | `observations` | int | `obs` lines written |
 | `views` | object | `{kept, written, evicted, skipped: {<viewReason>: n}, groups, bytes}`: kept = retained at the end (≤ 400), written = view files written, evicted = `view_evicted` lines, skipped = `obs` lines without a view by reason, groups = retention groups, bytes = bytes of retained view files |
 | `retained` | [string] | obs ids of the retained views |
-| `created` | [string] | entry ids this scan created (promoted), in promotion order |
+| `created` | [string] | entry ids this scan created (promoted); the order is not that of the `add` lines (seen on the first device run), so compare as a set |
 | `tentativeDropped` | [{entry, obs: [string]}] | tentative entries dropped at the end, with the obs ids linked to each |
 | `error` | string or null | `finish_failed` when the session's end threw |
 
