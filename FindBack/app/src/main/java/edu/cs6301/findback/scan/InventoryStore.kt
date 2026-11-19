@@ -21,7 +21,10 @@ import org.json.JSONObject
  * `add`: a new entry. `update`: the entry as it is after a scan that sighted it (position, votes,
  * best crop and evidence). `evidence`: only the evidence fields changed. `rename`, `delete`: by the
  * user; `delete` lines written when "New map" moves the file away carry `"reason": "map_archived"`.
- * Replaying the lines in order gives the inventory at any time.
+ * v0.8 study logging: an `evidence` line may carry `"historyItem"`, the item that scan appended to
+ * the entry's `history`; `confirm` (full entry, `"source": "user_verify"`) is an explicit
+ * confirmation by the user that set the entry's `confirmed`. Replaying the lines in order gives the
+ * inventory at any time.
  *
  * The in-memory list is an immutable snapshot replaced on every change, so any thread may read
  * [snapshot]. Changes are synchronized; the scan worker makes them. The file is rewritten by
@@ -112,9 +115,12 @@ class InventoryStore(val root: File, private val sessionId: String = "") {
     appendEntryLine("update", e)
   }
 
-  /** One `evidence` line with the evidence fields of the entry as it is now. */
+  /**
+   * One `evidence` line with the evidence fields of the entry as it is now. v0.8: [historyItem]
+   * (study logging) is the history item the scan appended, written as `"historyItem"`.
+   */
   @Synchronized
-  fun logEvidence(id: String): Boolean {
+  fun logEvidence(id: String, historyItem: HistoryItem? = null): Boolean {
     val entry = get(id) ?: return false
     val o = JSONObject()
     o.put("t", System.currentTimeMillis())
@@ -125,8 +131,22 @@ class InventoryStore(val root: File, private val sessionId: String = "") {
     o.put("evidence", entry.evidenceJson())
     o.put("source", entry.evidence.lastSource ?: JSONObject.NULL)
     o.put("sourceId", entry.evidence.lastSourceId ?: JSONObject.NULL)
+    if (historyItem != null) o.put("historyItem", InventoryEntry.historyJson(historyItem))
     appendLine(o)
     return true
+  }
+
+  /**
+   * v0.8: the user's explicit confirmation sets [state] as the entry's `confirmed`: one `confirm`
+   * line with the full entry, saved at once. Nothing else of the entry changes. Null when the
+   * entry no longer exists.
+   */
+  @Synchronized
+  fun confirm(id: String, state: ConfirmedState): InventoryEntry? {
+    val e = update(id) { it.copy(confirmed = state) } ?: return null
+    appendEntryLine("confirm", e, "source" to state.source)
+    flush()
+    return e
   }
 
   /** The user's own name for an entry; it then no longer follows the label. Saved at once. */

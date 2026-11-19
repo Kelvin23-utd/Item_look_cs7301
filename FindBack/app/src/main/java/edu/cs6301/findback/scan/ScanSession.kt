@@ -1,5 +1,6 @@
 package edu.cs6301.findback.scan
 
+import edu.cs6301.findback.map.Vec3
 import edu.cs6301.findback.map.distance
 import java.util.UUID
 
@@ -14,6 +15,10 @@ class ObservationResult(
   val similarity: Float?,
   /** Distance to that entry's position before this sighting; null for a new entry. */
   val distanceM: Double?,
+  /** v0.8: the match qualified by its label (`Match.byLabel`); null without a match. */
+  val byLabel: Boolean? = null,
+  /** v0.8 study log: the nearest entries the matcher looked at; null when study logging is off. */
+  val candidates: List<MergeCandidate>? = null,
 )
 
 class MergeResult(
@@ -52,6 +57,10 @@ class SessionSummary(
   val notObserved: Int,
   /** Detections seen in one keyframe only: never became entries. */
   val tentativeDropped: Int,
+  /** v0.8: the ids of those dropped tentative entries. */
+  val droppedTentative: List<String> = emptyList(),
+  /** v0.8: entries created by this scan, in the order they became real. */
+  val createdIds: List<String> = emptyList(),
 )
 
 /**
@@ -76,6 +85,13 @@ class ScanSession(
   private val store: InventoryStore,
   /** Block B (not wired in yet): compare new entries with `missed` ones when the scan ends. */
   private val movedCandidates: Boolean = false,
+  /**
+   * v0.8 study logging (docs/PLAN_v0.8_study_logging.md): record the matcher's candidates, which
+   * observations each entry took in this scan, and at the end one `history` item per entry and the
+   * `confirmed` state of the entries this scan created. It never changes a decision or an existing
+   * field; SCAN mode only.
+   */
+  val studyLogging: Boolean = false,
   private val newId: () -> String = { UUID.randomUUID().toString().substring(0, 8) },
 ) {
   enum class Mode { SCAN, PASSIVE }
@@ -94,6 +110,39 @@ class ScanSession(
   }
 
   private class Tentative(var entry: InventoryEntry, val firstMs: Long, var crop: Any?)
+
+  /** v0.8: what one entry took from this scan's keyframes (detections only, never appearance matches). */
+  private class ScanTrack {
+    val obs = ArrayList<String>()
+    var n = 0
+    var sx = 0.0
+    var sy = 0.0
+    var sz = 0.0
+    var lastMs: Long? = null
+
+    fun add(o: Observation, tMs: Long) {
+      o.obsId?.let { obs.add(it) }
+      n++
+      sx += o.mapPoint.x
+      sy += o.mapPoint.y
+      sz += o.mapPoint.z
+      lastMs = maxOf(lastMs ?: tMs, tMs)
+    }
+
+    fun mean(): Vec3? = if (n == 0) null else Vec3(sx / n, sy / n, sz / n)
+  }
+
+  private val tracks = HashMap<String, ScanTrack>()
+  private val createdOrder = ArrayList<String>()
+
+  /** v0.8: the observation ids that the matcher linked to [entryId] in this scan (empty when not logging). */
+  fun linkedObservations(entryId: String): List<String> = tracks[entryId]?.obs?.toList() ?: emptyList()
+
+  private fun track(r: ObservationResult, kf: KeyframeInfo) {
+    if (!studyLogging || mode != Mode.SCAN) return
+    val id = r.entryId ?: return
+    tracks.getOrPut(id) { ScanTrack() }.add(r.observation, kf.tMs)
+  }
 
   private val tentative = ArrayList<Tentative>()
   private val tallies = HashMap<String, Tally>()
@@ -137,15 +186,21 @@ class ScanSession(
     for (obs in observations.sortedByDescending { it.score }) {
       val real = store.snapshot().filter { eligible(it) }
       val candidates = if (mode == Mode.SCAN) real + tentative.map { it.entry } else real
+      // v0.8 study log: what the matcher is about to compare, computed apart from the match itself.
+      val considered =
+        if (studyLogging) Merger.nearest(obs, candidates, used, tentative.mapTo(HashSet()) { it.entry.id }, StudyConfig.DECISION_CANDIDATES)
+        else null
       val m = Merger.match(obs, candidates, used)
       if (m == null) {
         if (mode == Mode.SCAN) {
           val e = Merger.newEntry(newId(), obs, kf, mapId, container, id, detectorId, appSessionId, embeddingModel)
           tentative.add(Tentative(e, kf.tMs, obs.crop))
           used.add(e.id)
-          results.add(ObservationResult(obs, KIND_NEW, e.id, null, null))
+          results.add(ObservationResult(obs, KIND_NEW, e.id, null, null, null, considered))
+          track(results.last(), kf)
+          createdOrder.add(e.id)
         } else {
-          results.add(ObservationResult(obs, KIND_UNMATCHED, null, null, null))
+          results.add(ObservationResult(obs, KIND_UNMATCHED, null, null, null, null, considered))
         }
         continue
       }
@@ -167,10 +222,11 @@ class ScanSession(
             it.matchedKeyframes++
             it.lastSeenMs = kf.tMs
           }
-          results.add(ObservationResult(obs, KIND_PROMOTED, e.id, m.similarity, m.distanceM))
+          results.add(ObservationResult(obs, KIND_PROMOTED, e.id, m.similarity, m.distanceM, m.byLabel, considered))
         } else {
-          results.add(ObservationResult(obs, KIND_TENTATIVE, e.id, m.similarity, m.distanceM))
+          results.add(ObservationResult(obs, KIND_TENTATIVE, e.id, m.similarity, m.distanceM, m.byLabel, considered))
         }
+        track(results.last(), kf)
         continue
       }
       // A real entry.
@@ -193,7 +249,8 @@ class ScanSession(
           if (better) crops.add(e.id to obs.crop)
         }
       }
-      results.add(ObservationResult(obs, KIND_KNOWN, m.entry.id, m.similarity, m.distanceM))
+      results.add(ObservationResult(obs, KIND_KNOWN, m.entry.id, m.similarity, m.distanceM, m.byLabel, considered))
+      track(results.last(), kf)
     }
     return MergeResult(results, matched, added, crops)
   }
@@ -254,7 +311,7 @@ class ScanSession(
    * and not seen (moved candidates). PASSIVE: only `seen` and `missed` are recorded; an entry the
    * window learned nothing about is left as it is.
    */
-  fun finish(nowMs: Long): SessionSummary {
+  fun finish(nowMs: Long, retainedViews: Set<String> = emptySet()): SessionSummary {
     val source = if (mode == Mode.SCAN) ScanConfig.SOURCE_SCAN else ScanConfig.SOURCE_PASSIVE
     val results = ArrayList<EvidenceResult>()
     for (e in store.snapshot()) {
@@ -292,16 +349,19 @@ class ScanSession(
       }
       store.setLastScan(id, nowMs)
     }
+    // v0.8 study log: one history item per entry, and `confirmed` for the entries this scan created.
+    val historyItems = if (studyLogging && mode == Mode.SCAN) addHistory(results, nowMs, retainedViews) else emptyMap()
     // One log line per changed entry: `update` when the scan sighted it, else `evidence`.
     val finished = ArrayList<EvidenceResult>()
     for (r in results) {
       val now = store.get(r.entry.id) ?: continue
-      if (r.entry.id in sighted) store.logUpdate(now.id) else store.logEvidence(now.id)
+      if (r.entry.id in sighted) store.logUpdate(now.id) else store.logEvidence(now.id, historyItems[now.id])
       finished.add(EvidenceResult(now, r.outcome, r.eligible, r.isNew, r.tally))
     }
     store.flush()
 
     val dropped = tentative.size
+    val droppedIds = tentative.map { it.entry.id }
     tentative.clear()
     return SessionSummary(
       results = finished,
@@ -311,7 +371,54 @@ class ScanSession(
       missed = finished.count { it.outcome == ScanConfig.OUTCOME_MISSED },
       notObserved = finished.count { it.outcome == ScanConfig.OUTCOME_NOT_OBSERVED },
       tentativeDropped = dropped,
+      droppedTentative = droppedIds,
+      createdIds = createdOrder.filter { it in created },
     )
+  }
+
+  /**
+   * v0.8: append this scan's history item to every entry that got an outcome, and set `confirmed`
+   * of each entry this scan created (only when it has none). Nothing else of the entry changes, and
+   * a later scan's merge never touches `confirmed`. Returns the items by entry id.
+   */
+  private fun addHistory(results: List<EvidenceResult>, nowMs: Long, retainedViews: Set<String>): Map<String, HistoryItem> {
+    val items = HashMap<String, HistoryItem>()
+    for (r in results) {
+      val entryId = r.entry.id
+      val tr = tracks[entryId]
+      val isCreated = entryId in created
+      val item =
+        HistoryItem(
+          scan = id,
+          tMs = nowMs,
+          outcome = r.outcome,
+          eligible = r.eligible,
+          position = tr?.mean(),
+          sightings = tr?.n ?: 0,
+          lastObsMs = tr?.lastMs,
+          obs = tr?.obs?.toList() ?: emptyList(),
+          link = if (isCreated) StudyConfig.LINK_CREATED else StudyConfig.LINK_BASELINE_UNCONFIRMED,
+        )
+      store.update(entryId) { cur ->
+        val confirmed =
+          if (isCreated && cur.confirmed == null) {
+            ConfirmedState(
+              mapPosition = cur.position,
+              viewPosition = cur.viewPosition,
+              roomId = cur.roomId,
+              tMs = tr?.lastMs ?: cur.lastSeenMs,
+              scan = id,
+              source = StudyConfig.SOURCE_CREATED,
+              refs = item.obs.filter { it in retainedViews },
+            )
+          } else {
+            cur.confirmed
+          }
+        cur.copy(history = cur.history + item, confirmed = confirmed)
+      } ?: continue
+      items[entryId] = item
+    }
+    return items
   }
 
   /** Distance between two entries' positions (for the moved-candidate log). */

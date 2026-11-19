@@ -54,6 +54,9 @@ class MainActivity : AppCompatActivity() {
     /** v0.7: "Detailed trace" (Home sheet → Settings), read once at start (docs/PLAN_v0.7_trace.md). */
     private const val KEY_TRACE_ON = "traceOn"
     const val DEFAULT_TRACE_ON = true
+    /** v0.8: "Study logging" (Home sheet → Settings), read at each scan and query start (docs/PLAN_v0.8_study_logging.md). */
+    private const val KEY_STUDY_LOGGING = "studyLogging"
+    const val DEFAULT_STUDY_LOGGING = true
   }
 
   /** New id per app launch; same-session anchors are only valid within one id. */
@@ -109,6 +112,20 @@ class MainActivity : AppCompatActivity() {
   fun setScanSaveFrames(on: Boolean) {
     scanSaveFrames = on
     getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_SCAN_SAVE_FRAMES, on).apply()
+  }
+
+  /**
+   * v0.8 "Study logging": observation lines and view crops of every scan (`obs/`, `views/`), entry
+   * history, and the extra view and confirmation of a verification. Read when a scan or a query
+   * starts; logged as `scan_start.studyLogging` and `verify.studyLogging`.
+   */
+  @Volatile
+  var studyLogging: Boolean = DEFAULT_STUDY_LOGGING
+    private set
+
+  fun setStudyLogging(on: Boolean) {
+    studyLogging = on
+    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_STUDY_LOGGING, on).apply()
   }
 
   /**
@@ -252,6 +269,7 @@ class MainActivity : AppCompatActivity() {
       studyTag = StudySettings.cleanTag(prefs.getString(KEY_STUDY_TAG, ""))
       captureMode = CaptureMode.parse(prefs.getString(KEY_CAPTURE_MODE, null))
       scanSaveFrames = prefs.getBoolean(KEY_SCAN_SAVE_FRAMES, DEFAULT_SCAN_SAVE_FRAMES)
+      studyLogging = prefs.getBoolean(KEY_STUDY_LOGGING, DEFAULT_STUDY_LOGGING)
       traceOn = prefs.getBoolean(KEY_TRACE_ON, DEFAULT_TRACE_ON)
     }
     store = MemoryStore(root, sessionId)

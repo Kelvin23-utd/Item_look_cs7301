@@ -44,6 +44,53 @@ data class EvidenceState(
 data class MovedFrom(val entryId: String, val name: String, val roomId: String?, val similarity: Float, val scanId: String)
 
 /**
+ * v0.8: where the item was last known to be for certain. Set at the end of the scan that created
+ * the entry (`source` "created"); afterwards only an explicit confirmation by the user changes it
+ * ("user_verify"). A later scan's merge never does. Map frame, metres; times epoch ms.
+ */
+data class ConfirmedState(
+  val mapPosition: Vec3,
+  /** Where the camera stood (map frame), or null when unknown. */
+  val viewPosition: Vec3?,
+  val roomId: String?,
+  /** Time of the latest observation behind this state. */
+  val tMs: Long,
+  /** The creating scan; null for "user_verify". */
+  val scan: String?,
+  /** "created" or "user_verify". */
+  val source: String,
+  /** Observation ids of the reference views (`obs/`). */
+  val refs: List<String>,
+  /** "user_verify": the query and the verification similarity of the capture. */
+  val query: String? = null,
+  val similarity: Float? = null,
+)
+
+/**
+ * v0.8: what one scan said about an entry, from that scan's own sightings only. One item per scan
+ * that gave the entry an outcome.
+ */
+data class HistoryItem(
+  val scan: String,
+  /** Scan end, epoch ms. */
+  val tMs: Long,
+  /** "seen", "missed" or "not_observed", as the scan's evidence outcome. */
+  val outcome: String,
+  /** The entry took part in the scan (its map and target). */
+  val eligible: Boolean,
+  /** Mean map point of the detections the matcher linked to the entry in this scan, or null. */
+  val position: Vec3?,
+  /** Number of those detections. */
+  val sightings: Int,
+  /** Capture time of the latest of them, or null. */
+  val lastObsMs: Long?,
+  /** Their observation ids. */
+  val obs: List<String>,
+  /** "created" (this scan created the entry) or "baseline_unconfirmed" (a later scan's matcher). */
+  val link: String,
+)
+
+/**
  * One entry of the scan inventory (inventory.json): an item found by scan mode, merged from
  * repeated sightings. Immutable; every change makes a copy.
  */
@@ -93,6 +140,10 @@ data class InventoryEntry(
   val createdScan: String,
   val evidence: EvidenceState = EvidenceState(),
   val movedFrom: MovedFrom? = null,
+  /** v0.8 study logging; null until set (entries from before v0.8 or made with study logging off). */
+  val confirmed: ConfirmedState? = null,
+  /** v0.8 study logging: one item per scan, oldest first. */
+  val history: List<HistoryItem> = emptyList(),
 ) {
   /** The entry after one more evidence outcome at [atMs]. */
   fun withOutcome(outcome: String, atMs: Long, source: String, sourceId: String?): InventoryEntry {
@@ -203,6 +254,9 @@ data class InventoryEntry(
           }
         } ?: JSONObject.NULL,
       )
+      // v0.8: written only when set, so an entry without them is written exactly as before.
+      confirmed?.let { put("confirmed", confirmedJson(it)) }
+      if (history.isNotEmpty()) put("history", JSONArray().apply { history.forEach { put(historyJson(it)) } })
     }
 
   /** The evidence fields as written in inventory.json and in `evidence` lines of the log. */
@@ -232,6 +286,62 @@ data class InventoryEntry(
 
     fun toVec(a: JSONArray): Vec3 = Vec3(a.getDouble(0), a.getDouble(1), a.getDouble(2))
 
+    private fun optVec(o: JSONObject, key: String): Vec3? = if (o.isNull(key)) null else toVec(o.getJSONArray(key))
+
+    private fun strings(a: JSONArray?): List<String> = if (a == null) emptyList() else (0 until a.length()).map { a.getString(it) }
+
+    fun confirmedJson(c: ConfirmedState): JSONObject =
+      JSONObject().apply {
+        put("mapPosition", vec(c.mapPosition))
+        put("viewPosition", c.viewPosition?.let { vec(it) } ?: JSONObject.NULL)
+        put("roomId", c.roomId ?: JSONObject.NULL)
+        put("tMs", c.tMs)
+        put("scan", c.scan ?: JSONObject.NULL)
+        put("source", c.source)
+        put("refs", JSONArray(c.refs))
+        put("query", c.query ?: JSONObject.NULL)
+        put("similarity", c.similarity?.toDouble() ?: JSONObject.NULL)
+      }
+
+    fun confirmedFromJson(o: JSONObject): ConfirmedState =
+      ConfirmedState(
+        mapPosition = toVec(o.getJSONArray("mapPosition")),
+        viewPosition = optVec(o, "viewPosition"),
+        roomId = optString(o, "roomId"),
+        tMs = o.getLong("tMs"),
+        scan = optString(o, "scan"),
+        source = o.getString("source"),
+        refs = strings(o.optJSONArray("refs")),
+        query = optString(o, "query"),
+        similarity = if (o.isNull("similarity")) null else o.getDouble("similarity").toFloat(),
+      )
+
+    fun historyJson(h: HistoryItem): JSONObject =
+      JSONObject().apply {
+        put("scan", h.scan)
+        put("tMs", h.tMs)
+        put("outcome", h.outcome)
+        put("eligible", h.eligible)
+        put("position", h.position?.let { vec(it) } ?: JSONObject.NULL)
+        put("sightings", h.sightings)
+        put("lastObsMs", h.lastObsMs ?: JSONObject.NULL)
+        put("obs", JSONArray(h.obs))
+        put("link", h.link)
+      }
+
+    fun historyFromJson(o: JSONObject): HistoryItem =
+      HistoryItem(
+        scan = o.getString("scan"),
+        tMs = o.getLong("tMs"),
+        outcome = o.getString("outcome"),
+        eligible = o.optBoolean("eligible", true),
+        position = optVec(o, "position"),
+        sightings = o.optInt("sightings", 0),
+        lastObsMs = optLong(o, "lastObsMs"),
+        obs = strings(o.optJSONArray("obs")),
+        link = o.getString("link"),
+      )
+
     fun fromJson(o: JSONObject): InventoryEntry {
       val votes = LinkedHashMap<String, Double>()
       o.optJSONObject("labelVotes")?.let { v -> for (k in v.keys()) votes[k] = v.getDouble(k) }
@@ -254,6 +364,9 @@ data class InventoryEntry(
       }
       val ev = o.optJSONObject("evidence") ?: JSONObject()
       val moved = if (o.isNull("movedFrom")) null else o.getJSONObject("movedFrom")
+      // v0.8 fields: absent in older files.
+      val confirmed = if (o.isNull("confirmed")) null else confirmedFromJson(o.getJSONObject("confirmed"))
+      val history = o.optJSONArray("history")?.let { a -> (0 until a.length()).map { historyFromJson(a.getJSONObject(it)) } } ?: emptyList()
       val lastSeenMs = o.getLong("lastSeenMs")
       return InventoryEntry(
         id = o.getString("id"),
@@ -307,6 +420,8 @@ data class InventoryEntry(
               scanId = m.optString("scan", ""),
             )
           },
+        confirmed = confirmed,
+        history = history,
       )
     }
 

@@ -50,16 +50,21 @@ import edu.cs6301.findback.render.LabelRender
 import edu.cs6301.findback.render.PointCloudRender
 import edu.cs6301.findback.scan.ActiveScan
 import edu.cs6301.findback.scan.Affine2
+import edu.cs6301.findback.scan.Box
 import edu.cs6301.findback.scan.CameraPose
 import edu.cs6301.findback.scan.CapturedKeyframe
+import edu.cs6301.findback.scan.ConfirmedState
 import edu.cs6301.findback.scan.DepthMap
+import edu.cs6301.findback.scan.ExtraViewCapture
 import edu.cs6301.findback.scan.HitSample
 import edu.cs6301.findback.scan.InventoryEntry
 import edu.cs6301.findback.scan.Intrinsics
+import edu.cs6301.findback.scan.ObsJson
 import edu.cs6301.findback.scan.OverlayBox
 import edu.cs6301.findback.scan.ScanConfig
 import edu.cs6301.findback.scan.ScanController
 import edu.cs6301.findback.scan.ScanEnd
+import edu.cs6301.findback.scan.StudyConfig
 import edu.cs6301.findback.ml.YuvPlanes
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.CaptureRules
@@ -128,6 +133,9 @@ class PendingTap(val point: PointF, val updateOf: ObjectRecord?)
  */
 class QueryRequest(val record: ObjectRecord, val source: String, val inventoryId: String?)
 
+/** v0.8: a capture at or above the threshold, and the `confirmed` state a "present" answer would set. */
+class ConfirmedCapture(val attempt: Int, val state: ConfirmedState)
+
 /** One "find my item" query, from selecting the item to answering the ground-truth prompt. */
 class Query(
   val id: String,
@@ -144,6 +152,8 @@ class Query(
   val source: String = SOURCE_TAP,
   /** v0.5: the inventory entry the record was built from, or null for a tapped record. */
   val inventoryId: String? = null,
+  /** v0.8 "Study logging" at query start: extra-view lines and the user's confirmation. */
+  val studyLogging: Boolean = false,
 ) {
   companion object {
     const val SOURCE_TAP = "tap"
@@ -186,6 +196,8 @@ class Query(
   var ended = false
   /** v0.5: a confirmed capture already counted as `seen` for the scanned entry (once per query). */
   @Volatile var inventorySeen = false
+  /** v0.8: the latest capture at or above the threshold of a scanned entry, with study logging on. */
+  @Volatile var confirmedCapture: ConfirmedCapture? = null
 
   // Guidance, updated on the GL thread about 5 times a second; read by the UI at the end.
   @Volatile var mode: GuidanceMode? = null
@@ -267,6 +279,8 @@ class FindBackRenderer(private val activity: MainActivity) :
   // UI -> GL requests.
   private val pendingTap = AtomicReference<PendingTap?>(null)
   @Volatile private var pendingVerify = false
+  /** v0.8: when Verify was last pressed (epoch ms, UI thread), for the extra-view timing. */
+  @Volatile private var verifyPressMs = 0L
   @Volatile private var mlBusy = false
   private val pendingQuery = AtomicReference<QueryRequest?>(null)
   private val glCommands = ConcurrentLinkedQueue<() -> Unit>()
@@ -424,7 +438,10 @@ class FindBackRenderer(private val activity: MainActivity) :
       Action.SET_HOME -> view.dialogs.startAddSpot(home = true)
       Action.DONE -> onDonePressed()
       Action.SKIP -> onSkipPressed()
-      Action.VERIFY -> pendingVerify = true
+      Action.VERIFY -> {
+        verifyPressMs = System.currentTimeMillis()
+        pendingVerify = true
+      }
       Action.CANCEL_UPDATE -> cancelUpdate("waiting")
       Action.LOCK, Action.CANCEL_LOCK -> {}
     }
@@ -690,6 +707,7 @@ class FindBackRenderer(private val activity: MainActivity) :
         startElapsedMs = nowMs,
         source = req.source,
         inventoryId = req.inventoryId,
+        studyLogging = activity.studyLogging,
       )
     guard("guidance") { updateGuidance(q, camera, nowMs) }
     q.resolvable = resolve(rec) != null
@@ -768,6 +786,13 @@ class FindBackRenderer(private val activity: MainActivity) :
     )
     query = null
     view.exitGuideMode()
+    // v0.8 study logging: "present" after a capture at or above the threshold is the user's explicit
+    // confirmation of the scanned entry; it sets the entry's `confirmed` (nothing else changes).
+    if (truth == GroundTruth.PRESENT && q.studyLogging) {
+      val c = q.confirmedCapture
+      val id = q.inventoryId
+      if (c != null && id != null) scan.confirmByUser(id, c.state, c.attempt)
+    }
     if (markerError != null) {
       val cm = markerError.getDouble("errorM") * 100
       view.toast(
@@ -1419,6 +1444,21 @@ class FindBackRenderer(private val activity: MainActivity) :
     val msSinceQueryStart = captureMs - q.startElapsedMs
     val timing: Map<String, Any?> =
       mapOf("msSinceQueryStart" to msSinceQueryStart, "msSinceNear" to q.nearElapsedMs?.let { captureMs - it })
+    // v0.8: the camera pose (world and map frame), intrinsics and time of this capture.
+    val capturePose = camera.pose.let { CameraPose.of(it.translation, it.rotationQuaternion) }
+    val captureTWM = localizer.tWM
+    val captureTMs = System.currentTimeMillis()
+    val pressMs = verifyPressMs.takeIf { it > 0L }
+    val captureRoom = userRoom()
+    val captureMapId = localizer.currentMapId
+    val captureK =
+      camera.imageIntrinsics.let { ki ->
+        Intrinsics(
+          ki.focalLength[0].toDouble(), ki.focalLength[1].toDouble(), ki.principalPoint[0].toDouble(), ki.principalPoint[1].toDouble(),
+          ki.imageDimensions[0], ki.imageDimensions[1],
+        )
+      }
+    val extraObsId = if (q.studyLogging && q.inventoryId != null) StudyConfig.extraObsId(q.id, attempt) else null
 
     mlBusy = true
     q.capturing = true
@@ -1465,6 +1505,7 @@ class FindBackRenderer(private val activity: MainActivity) :
           }
         val embedMs = msSince(t2)
         val best = scored.maxBy { it.second }
+        val bestIndex = scored.indexOfFirst { it === best }
         val similarity = best.second
         val confirmed = similarity >= VerificationPolicy.MATCH_THRESHOLD
         val outcome = if (confirmed) "CONFIRMED" else "INSUFFICIENT_EVIDENCE"
@@ -1487,6 +1528,22 @@ class FindBackRenderer(private val activity: MainActivity) :
             },
           )
         val up = cf.sensorToUpright(px[0], px[1])
+        val k = captureK.scaledTo(cf.width, cf.height)
+        // v0.8 fields of the `verify` event; a failure here must not cost the event itself.
+        val studyFields: Map<String, Any?> =
+          try {
+            mapOf(
+              "captureTMs" to captureTMs,
+              "pressMs" to pressMs,
+              "camera" to ObsJson.camera(capturePose, captureTWM),
+              "mapToWorld" to ObsJson.mapToWorld(captureTWM),
+              "intrinsics" to ObsJson.intrinsics(k),
+              "studyLogging" to q.studyLogging,
+              "extraViewObs" to extraObsId,
+            )
+          } catch (e: Exception) {
+            mapOf("captureTMs" to captureTMs, "pressMs" to pressMs, "studyLogging" to q.studyLogging, "extraViewObs" to extraObsId, "studyError" to e.toString())
+          }
 
         q.lastOutcome = outcome
         q.lastSimilarity = similarity
@@ -1525,8 +1582,74 @@ class FindBackRenderer(private val activity: MainActivity) :
             "cropFile" to "verify/${vid}_best.jpg",
           ) + drift + // v0.3: drift proxies at capture
             timing + // v0.4
-            mapOf("embFile" to embFile, "studyTag" to q.studyTag, "captureMode" to q.captureMode.name)
+            mapOf("embFile" to embFile, "studyTag" to q.studyTag, "captureMode" to q.captureMode.name) +
+            studyFields // v0.8
         )
+        // v0.8 study logging: this capture as an `extra_view` observation of the scanned entry.
+        if (extraObsId != null) try {
+          val r = best.first.second
+          val rect = Box(r.left, r.top, r.right, r.bottom)
+          val targetMap = rec.mapPosition?.let { Vec3.of(it) } ?: captureTWM?.inverse()?.transformPoint(Vec3.of(world))
+          scan.logExtraView(
+            ExtraViewCapture(
+              obsId = extraObsId,
+              frame = CameraFrame(cf.sensor, cf.rotation),
+              rect = rect,
+              crop = best.first.third,
+              embedding = embeddings[bestIndex],
+              embeddingModel = emb.modelName,
+              pose = capturePose,
+              mapToWorld = captureTWM,
+              intrinsics = k,
+              mapId = captureMapId,
+              room = captureRoom,
+              tMs = captureTMs,
+              studyTag = q.studyTag,
+              extra =
+                ObsJson.ExtraFields(
+                  entryId = q.inventoryId,
+                  recordId = rec.id,
+                  queryId = q.id,
+                  attempt = attempt,
+                  captureMode = q.captureMode.name,
+                  requestStartMs = q.startMs,
+                  pressMs = pressMs,
+                  msSinceQueryStart = msSinceQueryStart,
+                  msSinceNear = q.nearElapsedMs?.let { captureMs - it },
+                  similarity = similarity.toDouble(),
+                  outcome = outcome,
+                  threshold = VerificationPolicy.MATCH_THRESHOLD.toDouble(),
+                  bestKind = best.first.first,
+                  positionSource = source.name,
+                  rect = rect,
+                  distanceM = d1.toDouble(),
+                  targetMap = targetMap,
+                  targetWorld = Vec3.of(world),
+                ),
+            )
+          )
+          if (confirmed && targetMap != null) {
+            q.confirmedCapture =
+              ConfirmedCapture(
+                attempt,
+                ConfirmedState(
+                  mapPosition = targetMap,
+                  viewPosition = captureTWM?.inverse()?.transformPoint(capturePose.position),
+                  roomId = q.itemRoom ?: captureRoom,
+                  tMs = captureTMs,
+                  scan = null,
+                  source = StudyConfig.SOURCE_USER_VERIFY,
+                  refs = listOf(extraObsId),
+                  query = q.id,
+                  similarity = similarity,
+                ),
+              )
+          }
+        } catch (e: Exception) {
+          // Never at the cost of the verification below (capture count, evidence, result).
+          Log.e(TAG, "Study extra view failed", e)
+          events.log("internal_error", mapOf("site" to "study_extra_view", "error" to e.toString()))
+        }
         if (q.msToFirstVerify == null) q.msToFirstVerify = msSinceQueryStart
         q.captures++ // only this capture writes it: mlBusy admits one capture at a time
         // v0.5: for a scanned entry, a confirmed capture is evidence that it is still there.
@@ -1628,6 +1751,7 @@ class FindBackRenderer(private val activity: MainActivity) :
       activity.scanSaveFrames,
       userRoom(),
       localizer.proxyFields(SystemClock.elapsedRealtime()),
+      studyLogging = activity.studyLogging, // v0.8, read at scan start
     )
   }
 

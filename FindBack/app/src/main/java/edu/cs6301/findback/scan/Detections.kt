@@ -125,6 +125,8 @@ class Observation(
   val cropHeightPx: Float,
   /** The crop image itself (a Bitmap on the device); kept only while it is an entry's best crop. */
   val crop: Any? = null,
+  /** v0.8: the study log's observation id (`<scanId>-<kf>-<j>`), or null when study logging is off. */
+  val obsId: String? = null,
 ) {
   /** Crop quality: box area × score. The best one becomes the entry's photo and embedding. */
   val quality: Float

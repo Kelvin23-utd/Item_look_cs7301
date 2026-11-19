@@ -16,6 +16,8 @@ backups/
 analysis/*.png
 # v0.7 trace summaries: a trajectory is a floor plan of the home.
 analysis/out/
+# Identity pilot: a filled ground-truth sheet describes a home (paper/IDENTITY_PILOT_PROTOCOL.md).
+paper/identity_pilot_ground_truth_*.private.csv
 # VLM naming: the models' exact identifiers stay private (the repository uses aliases only).
 analysis/vlm_models.private.json
 # Offline baselines (analysis/bench_*.py): virtual environment and downloaded model weights.

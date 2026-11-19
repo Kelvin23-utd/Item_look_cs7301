@@ -2,7 +2,7 @@
 
 Android (Kotlin, ARCore) prototype for the CS 6301 project. It builds on Google's ARCore `ml_kotlin` sample (Apache 2.0).
 
-Current version: **v0.7 (detailed trace)**, see [the v0.7 section](#v07-detailed-trace-nov-16) and `docs/PLAN_v0.7_trace.md`, on top of v0.6 (a simpler screen), see [the v0.6 section](#v06-a-simpler-screen-nov-16) and `docs/PLAN_v0.6_ui.md`, on top of v0.5 Block A (scan mode, `docs/PLAN_v0.5_scan_once.md`), v0.4 (study instrumentation) and v0.3 (home map). See [the v0.4 section](#v04-study-instrumentation-nov-16) and `docs/STUDY_SPEC_v0.4.md`, and [the v0.3 section](#v03-home-map-nov-16) and `docs/PLAN_v0.3_home_map.md`. The table below describes v0; where a later section differs, the later section wins.
+Current version: **v0.8 (study logging)**, see [the v0.8 section](#v08-study-logging-nov-19) and `docs/PLAN_v0.8_study_logging.md`, on top of v0.7 (detailed trace), see [the v0.7 section](#v07-detailed-trace-nov-16) and `docs/PLAN_v0.7_trace.md`, on top of v0.6 (a simpler screen), see [the v0.6 section](#v06-a-simpler-screen-nov-16) and `docs/PLAN_v0.6_ui.md`, on top of v0.5 Block A (scan mode, `docs/PLAN_v0.5_scan_once.md`), v0.4 (study instrumentation) and v0.3 (home map). See [the v0.4 section](#v04-study-instrumentation-nov-16) and `docs/STUDY_SPEC_v0.4.md`, and [the v0.3 section](#v03-home-map-nov-16) and `docs/PLAN_v0.3_home_map.md`. The table below describes v0; where a later section differs, the later section wins.
 
 ## What v0 does
 
@@ -21,7 +21,7 @@ Enable **Developer options → USB debugging** on the phone, connect it by USB a
 
 ```bash
 cd FindBack
-./gradlew testDebugUnitTest     # JVM unit tests (map math, walk graph, guidance, map.json, old records, v0.4 record fields, records log, embedding files, v0.7 trace CSV lines, rate gates, depth statistics, trace writer)
+./gradlew testDebugUnitTest     # JVM unit tests (map math, walk graph, guidance, map.json, old records, v0.4 record fields, records log, embedding files, v0.7 trace CSV lines, rate gates, depth statistics, trace writer, v0.8 person rule, view retention, observation lines, baseline unchanged with study logging)
 ./gradlew installDebug          # build and install
 adb shell am start -n edu.cs6301.findback/.MainActivity
 adb logcat -s FindBack FindBackEvent   # live log
@@ -262,6 +262,30 @@ One writer thread owns the files: the GL and sensor threads only format a line (
 ### Analysis
 
 `python3 analysis/trace_summary.py findback_data` writes one Markdown report and two plots per traced session to `analysis/out/` (git-ignored); see `analysis/README.md`. Sessions without a trace are skipped unless named with `--session`.
+
+## v0.8: study logging (Nov 19)
+
+`docs/PLAN_v0.8_study_logging.md` has the exact schema, rules and the list of checks an offline script can run. For a pilot on recognising the same item across scans on different days, the app now keeps the raw observations apart from what its matcher decided. The matcher, thresholds, detector, embedder and merge rules are unchanged; with study logging on or off its decisions, the entries' existing fields and the existing events are the same (unit-tested). Not yet run on the phone.
+
+**Setting.** Menu ⋮ → Settings → **Study logging** (default on), read when a scan or a search starts, logged as `scan_start.studyLogging` and `verify.studyLogging`. Off: none of the files, fields or events below except the new `scan_start`/`scan_end`/`verify` keys.
+
+**Files.**
+
+| Path | Contents |
+| --- | --- |
+| `obs/<scanId>.jsonl` | One line per detection that passed the scan filter (tentative and dropped ones included): label, score, box, depth, size, map and world point, camera pose in the world and map frames, map transform, intrinsics, the embedding (base64 float32), person flags, the view decision, and apart from all that `decision`: what the baseline matcher did (kind, entry, similarity, distance, `byLabel`, the 3 nearest candidates). Also `view_evicted` lines and a final `scan_end` line |
+| `views/<scanId>/<obsId>.jpg` | Up to 4 views per place (observations within 0.30 m in the map frame), chosen for the widest spread of viewing direction, ties by box area × score; at most 400 per scan. The padded box at full camera resolution, upright, JPEG 90, as the entry photo. A view replaced later in the same scan is deleted and a `view_evicted` line says so; earlier lines are never rewritten, and views of earlier scans are never touched |
+| `obs/extra_views.jsonl`, `views/extra/<obsId>.jpg` | One line (and crop) per verification capture of a scanned entry: pose, embedding, the entry, the query, `requestStartMs`, `pressMs` and the capture time |
+
+**People.** A view is never cut when its rectangle touches a person box (score ≥ 0.20, padded by 10 %), and no person box or crop of one is written. For extra views the scene detector checks the whole verification frame; if it cannot run, no crop is written. The keyframe JPEG rule is unchanged. Unchanged too, and worth knowing: an entry photo (`inventory/<id>.jpg`) is written whether or not a person is in the frame; only detections more than half inside a person box are dropped.
+
+**Entries.** Each entry gains `confirmed` (where the item was last known for certain: set at the end of the scan that created it, then changed only by the user's explicit confirmation, never by a later scan's merge) and `history` (one item per scan: outcome, the position from that scan's own sightings, the observation ids the matcher linked, `created` or `baseline_unconfirmed`). Both are absent until set, so older `inventory.json` files load and entries without them are written as before. `inventory_log.jsonl`: `evidence` lines may carry `historyItem`; new op `confirm`.
+
+**Extra view and confirmation.** Uses Items → Find → Verify unchanged. The `verify` event now has the camera pose (world and map), intrinsics, `captureTMs` and `pressMs`. With study logging on, the capture of a scanned entry becomes an `extra_view` line, and the answer **present** ("At the marker" or "Yes, it's here") after a capture at or above the threshold (0.75) sets the entry's `confirmed` (`source: "user_verify"`, events `inv_confirm`). The interruption is read from `query_start`, `pressMs`, `captureTMs` and `query_end` (plan section 10).
+
+**Events.** `scan_start`, `scan_end` add `studyLogging`, `studySchema`, `study` (configuration and counts: observations, views kept, written, evicted and skipped by reason); `scan_keyframe` adds `study` (lines, views, bytes, ms) with study logging on; new `study_extra_view` and `inv_confirm`.
+
+**Cost.** Per keyframe, on the scan worker: one append of about 7.5 KB per kept detection and one JPEG (typically 5–30 KB) per retained view. The first scan walk (110 keyframes, 105 kept detections) would have written about 2 MB.
 
 ## Known limits
 

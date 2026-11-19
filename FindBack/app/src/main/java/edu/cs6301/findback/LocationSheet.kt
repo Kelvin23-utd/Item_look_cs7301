@@ -122,6 +122,7 @@ class LocationDialogs(
   /**
    * Section 6.4, Settings: picture width, and "Save scan frames" (moved from Study settings).
    * v0.7: "Detailed trace" (applies at the next start) and the size of the trace data.
+   * v0.8: "Study logging" (applies from the next scan or search).
    */
   private fun showSettings() {
     var dialog: AlertDialog? = null
@@ -129,6 +130,11 @@ class LocationDialogs(
       CheckBox(activity).apply {
         text = "Save scan frames (image, depth and detections of every scan keyframe)"
         isChecked = activity.scanSaveFrames
+      }
+    val studyLogging =
+      CheckBox(activity).apply {
+        text = "Study logging (every scan detection with its pose and embedding, a few close-up views per place, never a view that touches a person)"
+        isChecked = activity.studyLogging
       }
     val detailedTrace =
       CheckBox(activity).apply {
@@ -167,6 +173,7 @@ class LocationDialogs(
           }
         )
         addView(saveFrames)
+        addView(studyLogging)
         addView(detailedTrace)
         addView(traceSize)
       }
@@ -177,6 +184,11 @@ class LocationDialogs(
         .setPositiveButton("Save") { _, _ ->
           // v0.5 (plan section 8): read when a scan starts; logged as `scan_start.saveFrames`.
           if (saveFrames.isChecked != activity.scanSaveFrames) activity.setScanSaveFrames(saveFrames.isChecked)
+          // v0.8: read when a scan or a search starts; logged as `scan_start.studyLogging`.
+          if (studyLogging.isChecked != activity.studyLogging) {
+            main.uiTrace.action("dialog:settings", if (studyLogging.isChecked) "study_logging_on" else "study_logging_off")
+            activity.setStudyLogging(studyLogging.isChecked)
+          }
           // v0.7: read at the next start; logged as `session_start.traceOn`.
           if (detailedTrace.isChecked != activity.traceOnNextStart) {
             main.uiTrace.action("dialog:settings", if (detailedTrace.isChecked) "trace_on" else "trace_off")

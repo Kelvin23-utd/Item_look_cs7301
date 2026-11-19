@@ -83,6 +83,10 @@ class ActiveScan(
   val startMs: Long,
   val startElapsedMs: Long,
   val session: ScanSession,
+  /** v0.8 "Study logging" as read at scan start (`scan_start.studyLogging`). */
+  val studyLogging: Boolean = false,
+  /** v0.8: the study log of this scan, or null when [studyLogging] is off. Scan worker only. */
+  val study: StudyScan? = null,
 ) {
   // GL thread.
   var nextIndex = 0
@@ -200,6 +204,8 @@ class ScanController(
 
   // Scan worker only.
   private var detector: SceneDetector? = null
+  /** v0.8 study logging (obs/, views/); used on the scan worker only. */
+  private val recorder = StudyRecorder(files, sessionId)
   private var lastFlushMs = 0L
   private val lastErrorMs = HashMap<String, Long>()
 
@@ -209,15 +215,26 @@ class ScanController(
    * GL thread: start a scan of the open area in map [mapId]. The caller has checked that the app
    * is located and idle. Returns the scan, or null when one is already running.
    */
-  fun start(mapId: String, studyTag: String, captureMode: String, saveFrames: Boolean, roomId: String?, drift: Map<String, Any?>): ActiveScan? {
+  fun start(
+    mapId: String,
+    studyTag: String,
+    captureMode: String,
+    saveFrames: Boolean,
+    roomId: String?,
+    drift: Map<String, Any?>,
+    studyLogging: Boolean = false,
+  ): ActiveScan? {
     if (activeRef.get() != null) return null
     val id = newId()
     val nowMs = System.currentTimeMillis()
     val model = embedder()?.modelName ?: ""
     val session =
-      ScanSession(id, ScanSession.Mode.SCAN, mapId, null, ScanConfig.DEFAULT_DETECTOR, sessionId, model, nowMs, inventory)
+      ScanSession(id, ScanSession.Mode.SCAN, mapId, null, ScanConfig.DEFAULT_DETECTOR, sessionId, model, nowMs, inventory, studyLogging = studyLogging)
     val a =
-      ActiveScan(id, mapId, ScanConfig.DEFAULT_DETECTOR, ScanConfig.TARGET_OPEN, null, saveFrames, studyTag, nowMs, SystemClock.elapsedRealtime(), session)
+      ActiveScan(
+        id, mapId, ScanConfig.DEFAULT_DETECTOR, ScanConfig.TARGET_OPEN, null, saveFrames, studyTag, nowMs, SystemClock.elapsedRealtime(), session,
+        studyLogging, if (studyLogging) StudyScan(id) else null,
+      )
     if (!activeRef.compareAndSet(null, a)) return null
     pacer.scanStarted()
     events.log(
@@ -236,7 +253,13 @@ class ScanController(
         "entries" to inventory.snapshot().count { it.mapId == mapId },
         "embeddingModel" to model,
         "config" to configJson(),
-      ) + drift
+      ) + drift +
+        // v0.8: the study-logging state for this scan (read at its start) and the schema of obs/.
+        mapOf(
+          "studyLogging" to studyLogging,
+          "studySchema" to StudyConfig.SCHEMA,
+          "study" to if (studyLogging) StudyConfig.configJson().put("obsFile", StudyConfig.obsFile(id)) else null,
+        )
     )
     ui.scanStarted(a)
     return a
@@ -333,7 +356,10 @@ class ScanController(
     t = SystemClock.elapsedRealtimeNanos()
     val reportOf = HashMap<Observation, DetectionReport>()
     val observations = ArrayList<Observation>()
-    for (r in reports) {
+    // v0.8 study log: each kept detection's crop rectangle and raw index, in observation order.
+    val rects = ArrayList<Box>()
+    val rawIndex = ArrayList<Int>()
+    for ((ri, r) in reports.withIndex()) {
       if (!r.kept) continue
       val b = r.detection.box
       val rect = cf.clamp(CameraFrame.pad(RectF(b.left, b.top, b.right, b.bottom), ScanConfig.CROP_PAD))
@@ -352,9 +378,12 @@ class ScanController(
           cropWidthPx = rect.width(),
           cropHeightPx = rect.height(),
           crop = crop,
+          obsId = if (a.study != null) StudyConfig.obsId(a.id, kf.index, observations.size) else null,
         )
       observations.add(o)
       reportOf[o] = r
+      rects.add(Box(rect.left, rect.top, rect.right, rect.bottom))
+      rawIndex.add(ri)
     }
     lat["embedMs"] = msSince(t)
 
@@ -384,6 +413,17 @@ class ScanController(
     val frameFile = if (a.saveFrames) saveFrame(a, kf, cf, reports, reportOf, resultOf, hasPerson) else null
     lat["saveMs"] = msSince(t)
     lat["totalMs"] = msSince(t0)
+
+    // v0.8 study log: observation lines and view crops, timed apart from `latency`.
+    val study =
+      a.study?.let { st ->
+        try {
+          recorder.keyframe(a, st, kf, cf.width, cf.height, k, geom.cameraMap, reports, observations, rects, rawIndex, resultOf, emb.modelName)
+        } catch (e: Exception) {
+          logError("study_keyframe", e)
+          null
+        }
+      }
 
     for (e in merge.added) {
       events.log("inv_add", mapOf("inventoryId" to e.id, "scan" to a.id, "keyframe" to kf.index, "entry" to e.toJson(withEmbedding = false)))
@@ -453,7 +493,7 @@ class ScanController(
             }
           },
         "frameFile" to frameFile,
-      )
+      ) + (if (study != null) mapOf("study" to study.toJson()) else emptyMap())
     )
     for ((name, ms) in lat) a.latencies.getOrPut(name) { ArrayList() }.add(ms)
     a.keyframesProcessed++
@@ -522,6 +562,59 @@ class ScanController(
       )
     } catch (ex: Exception) {
       logError("inv_verify", ex)
+    }
+  }
+
+  /**
+   * v0.8: a verification capture of a scanned entry with study logging on. The person check, the
+   * crop and the `extra_view` line run on the scan worker (idle outside a scan), so the
+   * verification is not slowed down.
+   */
+  fun logExtraView(x: ExtraViewCapture) {
+    try {
+      worker.execute {
+        try {
+          events.log("study_extra_view", recorder.extraView(x, detectorOrLoad()))
+        } catch (e: Exception) {
+          logError("study_extra_view", e)
+        }
+      }
+    } catch (e: Exception) {
+      logError("study_extra_view", e) // the worker was shut down
+    }
+  }
+
+  /**
+   * v0.8: the user answered "present" after a capture of [entryId] at or above the verification
+   * threshold, with study logging on: that is an explicit confirmation and sets the entry's
+   * `confirmed` (source "user_verify"). Queued on the scan worker after the capture's own line.
+   */
+  fun confirmByUser(entryId: String, state: ConfirmedState, attempt: Int) {
+    try {
+      worker.execute {
+        try {
+          val before = inventory.get(entryId)?.confirmed
+          val e = inventory.confirm(entryId, state) ?: return@execute
+          events.log(
+            "inv_confirm",
+            mapOf(
+              "inventoryId" to entryId,
+              "name" to e.name,
+              "source" to state.source,
+              "query" to state.query,
+              "attempt" to attempt,
+              "obs" to state.refs.firstOrNull(),
+              "similarity" to state.similarity,
+              "confirmed" to InventoryEntry.confirmedJson(state),
+              "previous" to before?.let { InventoryEntry.confirmedJson(it) },
+            )
+          )
+        } catch (ex: Exception) {
+          logError("inv_confirm", ex)
+        }
+      }
+    } catch (e: Exception) {
+      logError("inv_confirm", e)
     }
   }
 
@@ -700,12 +793,21 @@ class ScanController(
     var summary: SessionSummary? = null
     var error: String? = null
     try {
-      summary = a.session.finish(System.currentTimeMillis())
+      summary = a.session.finish(System.currentTimeMillis(), a.study?.selector?.retainedIds() ?: emptySet())
     } catch (e: Exception) {
       error = e.toString()
       logError("scan_finish", e)
     }
     a.finished = true
+    val studyCounts =
+      a.study?.let { st ->
+        try {
+          recorder.scanEnd(a, st, reason, summary, a.keyframesProcessed)
+        } catch (e: Exception) {
+          logError("study_scan_end", e)
+          null
+        }
+      }
     // One outcome per entry of the map (plan section 7), each logged.
     for (r in summary?.results ?: emptyList()) {
       val t = r.tally
@@ -760,6 +862,10 @@ class ScanController(
         "depthChecks" to a.depthChecks.size,
         "depthCheckMedianM" to depthMedian,
         "error" to error,
+        // v0.8
+        "studyLogging" to a.studyLogging,
+        "studySchema" to StudyConfig.SCHEMA,
+        "study" to studyCounts,
       )
     )
     try {

@@ -21,6 +21,18 @@ class KeyframeInfo(
 /** The entry a detection merges into, with how it qualified. */
 class Match(val entry: InventoryEntry, val distanceM: Double, val similarity: Float, val byLabel: Boolean)
 
+/** v0.8 study log: one entry [Merger.match] looked at for a detection, and how it compared. */
+class MergeCandidate(
+  val entryId: String,
+  val distanceM: Double,
+  val similarity: Float,
+  val sameLabel: Boolean,
+  /** Within the merge radius of [Merger.radius]. */
+  val withinRadius: Boolean,
+  /** A tentative entry of the running scan. */
+  val tentative: Boolean,
+)
+
 /**
  * Plan section 6: merging repeated sightings into entries. Pure Kotlin, unit-tested.
  */
@@ -63,6 +75,20 @@ object Merger {
     }
     return best
   }
+
+  /**
+   * v0.8 study log, read only: the [n] entries of [candidates] (not in [used]) nearest to [obs],
+   * nearest first, with the quantities [match] compares. It decides nothing.
+   */
+  fun nearest(obs: Observation, candidates: List<InventoryEntry>, used: Set<String>, tentativeIds: Set<String>, n: Int): List<MergeCandidate> =
+    candidates
+      .filter { it.id !in used }
+      .map { it to distance(it.position, obs.mapPoint) }
+      .sortedBy { it.second }
+      .take(n)
+      .map { (e, d) ->
+        MergeCandidate(e.id, d, cosine(e.embedding, obs.embedding), e.label == obs.label, d <= radius(e.sizeM, obs.sizeM), e.id in tentativeIds)
+      }
 
   /** A first sighting as an entry (tentative until its second sighting). */
   fun newEntry(
