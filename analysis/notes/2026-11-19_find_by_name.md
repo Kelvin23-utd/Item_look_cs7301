@@ -65,3 +65,33 @@ On the first walk the owner typed a name for 9 tapped items when saving them. Us
 - 16 of the 44 items have no phone label at all (tapped items the phone's classifier left unnamed).
 
 Limits: n = 9, one home; the names were typed when saving, not when searching; one is a placeholder; this set was looked at before any rule was frozen, so it is a development set. Ideas taken from it (ignoring filler words, tolerating a typo, saving a failed search word as a name for the item then picked) need a fresh test. The query sheet for the 24 scan entries has not been filled in and its comparison has not been run.
+
+## Baseline: text-to-image retrieval (2026-11-20)
+
+`analysis/name_retrieval.py` compares the app's rule with ranking every saved photo by the cosine similarity of a joint text-image encoder between the photo and the text "a photo of " + query. Two encoders: MobileCLIP2-S2 (as `bench_match.py` loads it) and OpenCLIP ViT-L/14 trained on LAION-2B. The prompt, the encoders and the measures were fixed before the run; it was run once; the raw-query variant is in the private output and does not change the picture. Cells are queries whose target is within the first k results.
+
+Owner-typed names (the development set above: 9 queries, 44 items):
+
+| Method | Top 1 | Top 3 | Top 5 | Top 10 | Target is a result |
+| --- | --- | --- | --- | --- | --- |
+| Phone labels alone | 0 | 0 | 0 | 0 | 0 |
+| With names of Model A, B or D (each) | 1 | 2 | 2 | 3 | 3 |
+| With names of Model C | 1 | 3 | 3 | 4 | 4 |
+| Retrieval, MobileCLIP2-S2 | 3 | 7 | 8 | 8 | lists all 44 |
+| Retrieval, ViT-L/14 | 2 | 5 | 6 | 7 | lists all 44 |
+
+Cross-describer proxy on the phone's 82 entries: for each ordered pair of naming models (X, Y), each entry with a name in X's file gives one query (X's first name, target = that entry), searched with Y's names bound or by retrieval. 289 queries, 867 query and index pairs.
+
+| Method | Top 1 | Top 3 | Top 5 | Top 10 | Target is a result |
+| --- | --- | --- | --- | --- | --- |
+| With another model's names | 216 | 279 | 287 | 291 | 300 |
+| Retrieval, MobileCLIP2-S2 | 408 | 633 | 720 | 795 | lists all 82 |
+| Retrieval, ViT-L/14 | 399 | 630 | 714 | 768 | lists all 82 |
+
+- Phone labels alone find no target in the proxy, by construction: a model name equal to the phone's own name is left out of the names files, so it is never a query.
+- Counting any entry to which X gave the same first name as a hit (264 of the 867 pairs have such a shared name): names 273 / 318 / 320 / 322 (331 a result); MobileCLIP2-S2 486 / 717 / 792 / 831.
+- By index model, the target is a result for 79 of 216 (A), 63 of 219 (B), 89 of 215 (C), 69 of 217 (D).
+- Looked at after the run, not planned: the target is in the top 5 of either the names rule or MobileCLIP2-S2 for 751 of 867 pairs, against 720 for retrieval alone.
+- Mac CPU, 4 threads, batch 1: MobileCLIP2-S2 231 ms per photo and 12 ms per query (weights 398 MB); ViT-L/14 205 ms and 27 ms (1711 MB). Not phone times.
+
+Limits: the proxy favours retrieval, because each query was written by a model looking at the photo that retrieval embeds; the owner-typed set is n = 9, was looked at before, and holds one placeholder name; retrieval returns every item in some order, so it cannot say that nothing matches, and no-match queries were not run; both encoders see the whole photo squashed to a square, which is not ViT-L/14's default preprocessing.
