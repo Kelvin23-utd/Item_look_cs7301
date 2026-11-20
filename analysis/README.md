@@ -351,6 +351,19 @@ python3 analysis/test_identity_replay.py        # tests (synthetic scenes; a few
 - Output goes to `analysis/out/identity_replay/<pull>/`: `result.json` (every decision, belief and score, the parameters, the commit) and `pack_<test scan>.json`. Both hold positions and item codes, so they stay out of git, as do the label files and the filled sheet.
 - `--per-item` prints item codes, so its output is private too.
 
+## Server-side encoder check (identity_server_check.py)
+
+Would a stronger image encoder off the phone decide the audited same-object cases (three moved objects, four unmoved ones), and do several retained views help over one? For each case, it ranks every history group before the test scan (group = the observations the app assigned to one entry within one scan). It does this with the phone's logged embedding and with each Track A embedding encoder in `analysis/.bench-cache`, run on the view JPEGs. Scores: one view against one view, and the max and median over every view pair; the max ranks. It reports the rank, the score, the best other group and the margin. It also scores the clear negatives used to read a threshold (groups of one scan more than 1 m apart), the crops a server would need, and the Mac time per crop. Encoders only, no vision-language model. Results: `notes/2026-11-19_server_encoder_check.md`.
+
+```bash
+analysis/.venv-bench/bin/python -I analysis/identity_server_check.py <pull>     # about 2 minutes
+python3 -I analysis/identity_server_check.py <pull> --encoders none            # phone embedding only, standard library
+python3 analysis/test_identity_server_check.py                                 # tests (also under the bench environment)
+```
+
+- The audited cases are the `CASES` list in the script; `--cases <json>` replaces them.
+- Output goes to `analysis/out/identity_server/` (git-ignored): `report.txt`, `tables.md` (number tables for a note) and `result.json`. They hold entry ids, no positions and no images.
+
 ## Session log
 
 | Session | Date | What | Use in study |
