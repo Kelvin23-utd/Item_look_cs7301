@@ -474,6 +474,40 @@ object InventoryText {
     }
   }
 
+  /**
+   * v0.9: the note that follows the last-seen line: [evidence] when the entry's last outcome was
+   * `missed` or `not_observed`, else null (a `seen` adds nothing to the time of the last sighting).
+   */
+  fun missNote(entry: InventoryEntry, nowMs: Long, lastScanId: String?): String? =
+    when (entry.evidence.lastOutcome) {
+      ScanConfig.OUTCOME_MISSED, ScanConfig.OUTCOME_NOT_OBSERVED -> evidence(entry, nowMs, lastScanId)
+      else -> null
+    }
+
+  /**
+   * v0.9: the second line of an Items row and the first line of the item sheet. "Last seen: Kitchen
+   * · 2 d ago", then " · " and [note] when there is one. Without a [place] the time comes first and
+   * [note] says why: "Last seen: 5 min ago · photo only".
+   */
+  fun lastSeenLine(place: String?, lastSeenMs: Long, nowMs: Long, note: String? = null): String {
+    val head = "Last seen: " + (if (place != null) "$place · " else "") + ago(lastSeenMs, nowMs)
+    return if (note != null) "$head · $note" else head
+  }
+
+  /**
+   * v0.9 "Last scan" chip: [entry] was seen in the finished scan [scanId]. True when one of its
+   * stored sightings is from that scan (a detection matched it), or when that scan's outcome for it
+   * was `seen` (also an appearance match), as kept in its evidence or, with study logging, in its
+   * history. Passive windows add no sightings, so a later window never hides a detection.
+   */
+  fun seenInScan(entry: InventoryEntry, scanId: String?): Boolean {
+    if (scanId == null) return false
+    if (entry.sightings.any { it.scanId == scanId }) return true
+    val ev = entry.evidence
+    if (ev.lastOutcome == ScanConfig.OUTCOME_SEEN && ev.lastSource == ScanConfig.SOURCE_SCAN && ev.lastSourceId == scanId) return true
+    return entry.history.any { it.scan == scanId && it.outcome == ScanConfig.OUTCOME_SEEN }
+  }
+
   /** "may be mug, last seen in Kitchen", or null. */
   fun movedHint(entry: InventoryEntry, roomName: (String?) -> String?): String? {
     val m = entry.movedFrom ?: return null

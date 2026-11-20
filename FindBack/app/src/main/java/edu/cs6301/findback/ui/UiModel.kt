@@ -299,15 +299,21 @@ object UiModel {
     return roomName?.lowercase(Locale.ROOT)?.contains(q) == true
   }
 
-  /** Section 6.5: the Items list's message when no row is shown, or null when rows are shown. */
-  fun itemsEmptyText(total: Int, shown: Int, query: String, roomName: String?): String? =
+  /**
+   * Section 6.5: the Items list's message when no row is shown, or null when rows are shown. It
+   * names the typed [query]. [scope]: the selected chip's room name, or "the last scan" (v0.9).
+   */
+  fun itemsEmptyText(total: Int, shown: Int, query: String, scope: String?): String? =
     when {
       total == 0 -> "No items yet. Press Scan, or tap an object in the camera view."
       shown > 0 -> null
-      query.isNotBlank() -> "Nothing matches \"" + query.trim() + "\"" + (roomName?.let { " in $it" } ?: "") + "."
-      roomName != null -> "No items in $roomName yet."
+      query.isNotBlank() -> "Nothing matches \"" + query.trim() + "\"" + (scope?.let { " in $it" } ?: "") + "."
+      scope != null -> "No items in $scope yet."
       else -> "No items."
     }
+
+  /** v0.9: the [itemsEmptyText] scope of the "Last scan" chip. */
+  const val LAST_SCAN_SCOPE = "the last scan"
 
   private fun count(n: Int, one: String, many: String) = if (n == 1) "1 $one" else "$n $many"
 }

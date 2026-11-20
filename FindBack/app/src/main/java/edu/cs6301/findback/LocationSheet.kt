@@ -123,6 +123,7 @@ class LocationDialogs(
    * Section 6.4, Settings: picture width, and "Save scan frames" (moved from Study settings).
    * v0.7: "Detailed trace" (applies at the next start) and the size of the trace data.
    * v0.8: "Study logging" (applies from the next scan or search).
+   * v0.9: "Extra names" (applies when the Items panel next opens).
    */
   private fun showSettings() {
     var dialog: AlertDialog? = null
@@ -135,6 +136,11 @@ class LocationDialogs(
       CheckBox(activity).apply {
         text = "Study logging (every scan detection with its pose and embedding, a few close-up views per place, never a view that touches a person)"
         isChecked = activity.studyLogging
+      }
+    val extraNames =
+      CheckBox(activity).apply {
+        text = "Extra names (Items search also uses the names and descriptions in names.json, for items whose photo has not changed since)"
+        isChecked = activity.extraNamesOn
       }
     val detailedTrace =
       CheckBox(activity).apply {
@@ -174,6 +180,7 @@ class LocationDialogs(
         )
         addView(saveFrames)
         addView(studyLogging)
+        addView(extraNames)
         addView(detailedTrace)
         addView(traceSize)
       }
@@ -188,6 +195,11 @@ class LocationDialogs(
           if (studyLogging.isChecked != activity.studyLogging) {
             main.uiTrace.action("dialog:settings", if (studyLogging.isChecked) "study_logging_on" else "study_logging_off")
             activity.setStudyLogging(studyLogging.isChecked)
+          }
+          // v0.9: read when the Items panel opens; logged as `ui_search.extraNames`.
+          if (extraNames.isChecked != activity.extraNamesOn) {
+            main.uiTrace.action("dialog:settings", if (extraNames.isChecked) "extra_names_on" else "extra_names_off")
+            activity.setExtraNamesOn(extraNames.isChecked)
           }
           // v0.7: read at the next start; logged as `session_start.traceOn`.
           if (detailedTrace.isChecked != activity.traceOnNextStart) {

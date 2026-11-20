@@ -291,4 +291,11 @@ class UiModelTest {
     assertEquals("Nothing matches \"mug\" in Kitchen.", UiModel.itemsEmptyText(4, 0, "mug", "Kitchen"))
     assertEquals("No items in Kitchen yet.", UiModel.itemsEmptyText(4, 0, "", "Kitchen"))
   }
+
+  @Test
+  fun emptyTextNamesTheQueryInTheLastScan() {
+    assertEquals("Nothing matches \"starbucks cup\" in the last scan.", UiModel.itemsEmptyText(9, 0, " starbucks cup ", UiModel.LAST_SCAN_SCOPE))
+    assertEquals("Nothing matches \"CUP!!\".", UiModel.itemsEmptyText(9, 0, "CUP!!", null))
+    assertNull(UiModel.itemsEmptyText(9, 3, "cup", UiModel.LAST_SCAN_SCOPE))
+  }
 }

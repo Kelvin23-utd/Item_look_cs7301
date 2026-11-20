@@ -25,6 +25,7 @@ import edu.cs6301.findback.map.MapStore
 import edu.cs6301.findback.memory.EventLog
 import edu.cs6301.findback.memory.MemoryStore
 import edu.cs6301.findback.scan.InventoryStore
+import edu.cs6301.findback.search.ExtraNamesStore
 import edu.cs6301.findback.study.CaptureMode
 import edu.cs6301.findback.study.StudySettings
 import edu.cs6301.findback.trace.TraceSession
@@ -57,6 +58,9 @@ class MainActivity : AppCompatActivity() {
     /** v0.8: "Study logging" (Home sheet → Settings), read at each scan and query start (docs/PLAN_v0.8_study_logging.md). */
     private const val KEY_STUDY_LOGGING = "studyLogging"
     const val DEFAULT_STUDY_LOGGING = true
+    /** v0.9: "Extra names" (Home sheet → Settings), read when the Items panel opens (docs/PLAN_v0.9_find_by_name.md). */
+    private const val KEY_EXTRA_NAMES = "extraNames"
+    const val DEFAULT_EXTRA_NAMES = true
   }
 
   /** New id per app launch; same-session anchors are only valid within one id. */
@@ -127,6 +131,23 @@ class MainActivity : AppCompatActivity() {
     studyLogging = on
     getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_STUDY_LOGGING, on).apply()
   }
+
+  /**
+   * v0.9 "Extra names": the Items search also uses the bound names and descriptors of names.json.
+   * Read when the Items panel opens; logged as `ui_search.extraNames`.
+   */
+  @Volatile
+  var extraNamesOn: Boolean = DEFAULT_EXTRA_NAMES
+    private set
+
+  fun setExtraNamesOn(on: Boolean) {
+    extraNamesOn = on
+    getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_EXTRA_NAMES, on).apply()
+  }
+
+  /** v0.9: names.json, read once at start, and the binding of its items to the current photos. */
+  lateinit var extraNames: ExtraNamesStore
+    private set
 
   /**
    * v0.7 "Detailed trace" for this session, fixed at start (logged as `session_start.traceOn`).
@@ -271,10 +292,16 @@ class MainActivity : AppCompatActivity() {
       scanSaveFrames = prefs.getBoolean(KEY_SCAN_SAVE_FRAMES, DEFAULT_SCAN_SAVE_FRAMES)
       studyLogging = prefs.getBoolean(KEY_STUDY_LOGGING, DEFAULT_STUDY_LOGGING)
       traceOn = prefs.getBoolean(KEY_TRACE_ON, DEFAULT_TRACE_ON)
+      extraNamesOn = prefs.getBoolean(KEY_EXTRA_NAMES, DEFAULT_EXTRA_NAMES)
     }
     store = MemoryStore(root, sessionId)
     events = EventLog(root, sessionId)
     inventory = InventoryStore(root, sessionId)
+    // v0.9: without names.json nothing is read; with it, the listed items' photos are hashed once
+    // here (the cache then keeps opening Items fast) for `session_start.namesBound`.
+    extraNames = ExtraNamesStore(root)
+    extraNames.loadError?.let { Log.i(TAG, "names.json not used: $it") }
+    val namesBound = extraNames.bind(ExtraNamesStore.refs(store.snapshot(), inventory.snapshot())).size
     mapStore =
       MapStore(
         root,
@@ -314,6 +341,14 @@ class MainActivity : AppCompatActivity() {
           "arcoreVersion" to arcoreVersion(),
           "displayPx" to displayPx(),
           "traceOn" to traceOn,
+        ) +
+        mapOf(
+          // v0.9: names.json's source alias, its item count, the items bound to their current
+          // photo, and why it is not used (null when it is).
+          "namesSource" to extraNames.file?.source,
+          "namesItems" to (extraNames.file?.items?.size ?: 0),
+          "namesBound" to namesBound,
+          "namesError" to extraNames.loadError,
         )
     )
     if (traceOn) {

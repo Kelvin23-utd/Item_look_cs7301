@@ -1,0 +1,34 @@
+{
+  "comment": "Shared cases for the v0.9 matching rule (FindBack/docs/PLAN_v0.9_find_by_name.md). Read by the app's unit test and by analysis/test_name_search.py. Synthetic items, no real data.",
+  "items": [
+    {"id": "a", "name": "cup", "labels": ["cup"], "extraNames": ["starbucks cup"], "descriptors": ["white", "paper"], "container": null, "room": "Kitchen", "lastSeenMs": 100},
+    {"id": "b", "name": "cup", "labels": ["cup", "bowl"], "extraNames": ["glass tumbler"], "descriptors": ["clear", "ribbed"], "container": null, "room": "Kitchen", "lastSeenMs": 200},
+    {"id": "c", "name": "bowl", "labels": ["bowl"], "extraNames": ["coffee cup"], "descriptors": ["red"], "container": null, "room": "Living room", "lastSeenMs": 300},
+    {"id": "d", "name": "My keys", "labels": ["scissors"], "extraNames": [], "descriptors": [], "container": "desk drawer", "room": "Bedroom", "lastSeenMs": 400},
+    {"id": "e", "name": "cell phone", "labels": ["cell phone", "remote"], "extraNames": ["tv remote control"], "descriptors": ["black"], "container": null, "room": "Living room", "lastSeenMs": 500},
+    {"id": "f", "name": "bottle", "labels": ["bottle"], "extraNames": ["teacup"], "descriptors": [], "container": null, "room": "Kitchen", "lastSeenMs": 600}
+  ],
+  "cases": [
+    {"query": "", "off": ["f", "e", "d", "c", "b", "a"], "on": ["f", "e", "d", "c", "b", "a"], "viaExtra": []},
+    {"query": "cup", "off": ["b", "a"], "on": ["b", "a", "c", "f"], "viaExtra": ["c", "f"], "onClasses": [0, 0, 1, 3]},
+    {"query": "  CUP!! ", "off": ["b", "a"], "on": ["b", "a", "c", "f"], "viaExtra": ["c", "f"]},
+    {"query": "starbucks", "off": [], "on": ["a"], "viaExtra": ["a"], "onClasses": [1]},
+    {"query": "Starbucks Cup", "off": [], "on": ["a"], "viaExtra": ["a"], "onClasses": [0]},
+    {"query": "star", "off": [], "on": ["a"], "viaExtra": ["a"], "onClasses": [1]},
+    {"query": "remote", "off": ["e"], "on": ["e"], "viaExtra": [], "offClasses": [2], "onClasses": [1]},
+    {"query": "phone", "off": ["e"], "on": ["e"], "viaExtra": [], "offClasses": [1], "onClasses": [1]},
+    {"query": "kitchen", "off": ["f", "b", "a"], "on": ["f", "b", "a"], "viaExtra": [], "onClasses": [2, 2, 2]},
+    {"query": "red", "off": [], "on": ["c"], "viaExtra": ["c"], "onClasses": [2]},
+    {"query": "red cup", "off": [], "on": ["c"], "viaExtra": ["c"], "onClasses": [2]},
+    {"query": "keys", "off": ["d"], "on": ["d"], "viaExtra": [], "offClasses": [1]},
+    {"query": "my keys", "off": ["d"], "on": ["d"], "viaExtra": [], "offClasses": [0]},
+    {"query": "scissors", "off": ["d"], "on": ["d"], "viaExtra": [], "offClasses": [2]},
+    {"query": "drawer", "off": ["d"], "on": ["d"], "viaExtra": [], "offClasses": [2]},
+    {"query": "bow", "off": ["c", "b"], "on": ["c", "b"], "viaExtra": [], "offClasses": [1, 2]},
+    {"query": "glass", "off": [], "on": ["b"], "viaExtra": ["b"], "onClasses": [1]},
+    {"query": "coffee-cup", "off": [], "on": ["c"], "viaExtra": ["c"], "onClasses": [0]},
+    {"query": "cup kitchen", "off": ["b", "a"], "on": ["b", "a", "f"], "viaExtra": ["f"], "offClasses": [2, 2], "onClasses": [2, 2, 3]},
+    {"query": "up", "off": [], "on": [], "viaExtra": []},
+    {"query": "xylophone", "off": [], "on": [], "viaExtra": []}
+  ]
+}

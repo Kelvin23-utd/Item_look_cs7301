@@ -38,10 +38,57 @@ class UiTrace(private val events: EventLog, val on: Boolean, private val screen:
     events.log("ui_screen", mapOf("from" to from, "to" to to, "msInPrevious" to ms))
   }
 
-  /** `ui_search`: the Items search settled. The typed text itself is never logged. */
-  fun search(chars: Int, results: Int, total: Int, roomFilter: String?) {
+  /**
+   * `ui_search`: the Items search settled. The typed text itself is never logged. v0.9:
+   * [extraNames] the setting, [namesBound] items with bound extra names, [viaExtra] shown rows that
+   * are results only because of extra names, [lastScanOnly] the "Last scan" chip.
+   */
+  fun search(
+    chars: Int,
+    results: Int,
+    total: Int,
+    roomFilter: String?,
+    extraNames: Boolean,
+    namesBound: Int,
+    viaExtra: Int,
+    lastScanOnly: Boolean,
+  ) {
     if (!on) return
-    events.log("ui_search", mapOf("chars" to chars, "results" to results, "total" to total, "roomFilter" to roomFilter))
+    events.log(
+      "ui_search",
+      mapOf(
+        "chars" to chars,
+        "results" to results,
+        "total" to total,
+        "roomFilter" to roomFilter,
+        "extraNames" to extraNames,
+        "namesBound" to namesBound,
+        "viaExtra" to viaExtra,
+        "lastScanOnly" to lastScanOnly,
+      ),
+    )
+  }
+
+  /**
+   * v0.9 `ui_action` `items_row`: a row opened. [kind] ("record", "entry") is the detail; [rank]
+   * its place in the shown list (1 = top), [shown] the rows shown, [chars] the query length,
+   * [matchClass] 0 to 3 (null for an empty query), [viaExtra] a result only because of extra names.
+   */
+  fun itemsRow(kind: String, rank: Int, shown: Int, chars: Int, matchClass: Int?, viaExtra: Boolean) {
+    if (!on) return
+    events.log(
+      "ui_action",
+      mapOf(
+        "action" to "items_row",
+        "screen" to screen(),
+        "detail" to kind,
+        "rank" to rank,
+        "shown" to shown,
+        "chars" to chars,
+        "matchClass" to matchClass,
+        "viaExtra" to viaExtra,
+      ),
+    )
   }
 
   /**

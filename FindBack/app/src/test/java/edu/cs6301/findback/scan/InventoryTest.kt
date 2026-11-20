@@ -217,4 +217,48 @@ class InventoryTest {
     val seen = e.copy(evidence = EvidenceState(seenCount = 1, lastOutcome = "seen"), lastSeenMs = 0L)
     assertEquals("seen 2 d ago", InventoryText.evidence(seen, 2 * 86_400_000L + 5_000L, null))
   }
+
+  @Test
+  fun lastSeenLineAndMissNote() {
+    val now = 2 * 86_400_000L + 5_000L
+    assertEquals("Last seen: Kitchen · 2 d ago", InventoryText.lastSeenLine("Kitchen", 0L, now))
+    assertEquals("Last seen: in desk drawer, Office · 2 d ago", InventoryText.lastSeenLine("in desk drawer, Office", 0L, now))
+    // A tapped record off the map: the time first, then what its place is.
+    assertEquals("Last seen: 5 min ago · photo only", InventoryText.lastSeenLine(null, 0L, 300_000L, "photo only"))
+    assertEquals("Last seen: 5 min ago · this session only", InventoryText.lastSeenLine(null, 0L, 300_000L, "this session only"))
+
+    val e = full().copy(lastSeenMs = 0L)
+    // `missed` in the last scan: the existing note follows the time.
+    assertEquals("looked for in the last scan, not seen", InventoryText.missNote(e, now, "scan0002"))
+    assertEquals(
+      "Last seen: Bedroom · 2 d ago · looked for in the last scan, not seen",
+      InventoryText.lastSeenLine("Bedroom", e.lastSeenMs, now, InventoryText.missNote(e, now, "scan0002")),
+    )
+    val notObserved = e.copy(evidence = EvidenceState(lastOutcome = "not_observed"))
+    assertEquals("not checked since " + InventoryText.day(0L), InventoryText.missNote(notObserved, now, null))
+    // `seen` or no outcome yet: nothing to add to the time.
+    assertNull(InventoryText.missNote(e.copy(evidence = EvidenceState(seenCount = 1, lastOutcome = "seen")), now, null))
+    assertNull(InventoryText.missNote(e.copy(evidence = EvidenceState()), now, null))
+  }
+
+  @Test
+  fun seenInScanForTheLastScanChip() {
+    // full(): one sighting from scan0001, last outcome `missed` by scan0002.
+    val e = full()
+    assertTrue(InventoryText.seenInScan(e, "scan0001")) // a detection in that scan
+    assertFalse(InventoryText.seenInScan(e, "scan0002")) // looked for, not seen
+    assertFalse(InventoryText.seenInScan(e, null)) // no finished scan yet
+    // `seen` by appearance only (no sighting from that scan), as the last outcome.
+    val byLook =
+      e.copy(evidence = EvidenceState(seenCount = 1, lastOutcome = "seen", lastOutcomeMs = 9_000L, lastSource = "scan", lastSourceId = "scan0003"))
+    assertTrue(InventoryText.seenInScan(byLook, "scan0003"))
+    // A later passive window replaced the last outcome: only the history (study logging) still says it.
+    val later = byLook.copy(evidence = byLook.evidence.copy(lastSource = "passive", lastSourceId = "pw0001"))
+    assertFalse(InventoryText.seenInScan(later, "scan0003"))
+    val withHistory = later.copy(history = listOf(HistoryItem("scan0003", 9_000L, "seen", true, null, 0, null, emptyList(), "baseline_unconfirmed")))
+    assertTrue(InventoryText.seenInScan(withHistory, "scan0003"))
+    // A `seen` outcome from verification is not a scan.
+    val verified = e.copy(evidence = EvidenceState(lastOutcome = "seen", lastSource = "verify", lastSourceId = "scan0003"))
+    assertFalse(InventoryText.seenInScan(verified, "scan0003"))
+  }
 }
