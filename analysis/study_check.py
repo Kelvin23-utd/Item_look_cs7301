@@ -650,12 +650,18 @@ def check_entries(p, scans, rep):
     entries = {e["id"]: e for e in p.inventory if e.get("mapId") == map_id}
     obs_of = {}
     retained_of = {}
-    for s in scans:
-        by_id, retained, _ = retained_views(p, s)
+    study = set(p.study_scans())
+    # Every study scan of the pull, not only the two being checked: an entry created by an earlier
+    # scan has `confirmed.refs` into that scan's observation file (seen on the second device run,
+    # 2026-11-19, where the map already held entries of two earlier scans).
+    for s in list(scans) + sorted(study - set(scans)):
+        try:
+            by_id, retained, _ = retained_views(p, s)
+        except Exception:  # noqa: BLE001  (an older scan's file that cannot be read is reported by `files`)
+            continue
         obs_of.update(by_id)
         retained_of[s] = retained
     extra = {o.get("obs"): o for o in p.extra_lines() if o.get("type") == "obs"}
-    study = set(p.study_scans())
     confirms = collections.defaultdict(list)
     for e in p.events:
         if e.get("type") == "inv_confirm":
