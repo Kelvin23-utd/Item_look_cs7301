@@ -54,4 +54,22 @@ Four entries now stand for the two glasses, two of them older entries of other o
 - "Unresolved between the two" was produced only by the method that knows the pair from history.
 - The app's history is again the weak point: an entry's reference views can show a different object from the one it now holds.
 
+## Ground truth supplied afterwards
+
+After the sections above were written, the person who ran the scans stated: **the glass that was moved is the right-hand one of the two, in the central part of the table.**
+
+Mapped to the data with the camera poses of scan 1: in all 9 keyframes that detected either glass, the glass at the first position (the one the app merged into the old "bowl" entry, 6 observations) lies to the right of the other as seen from the camera. So that glass was moved to the counter, and the glass at the second position (the new "bowl" entry of scan 1, 3 observations) stayed.
+
+Scored against that:
+
+| | Truth | Current app | Generic rules | Household |
+| --- | --- | --- | --- | --- |
+| Glass on the table in scan 2 | the glass that stayed (second scan-1 position) | wrong: merged into the old can entry, and the right entry marked missed | right entry | right entry |
+| Glass on the counter in scan 2 | the moved glass (first scan-1 position) | new item (duplicate) | new item (duplicate) | unresolved (not wrong, not decided) |
+
+Two cautions about the rules' right answer for the glass that stayed:
+
+- The raw evidence pointed the other way. The glass that stayed is 0.18 m from its own scan-1 position and 0.14 m from the moved glass's old position, and the phone's appearance score also favours the moved glass's scan-1 views (0.77 against 0.61). Nearest position or best appearance alone would have named the wrong glass.
+- The rules could not have picked the other entry, because its reference views still show the pot it used to hold. Whether the correction of the shift between the locates would have chosen correctly on its own was not tested.
+
 n = one identical pair, one test scan. A case, not a rate.
