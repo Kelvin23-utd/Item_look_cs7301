@@ -449,10 +449,14 @@ class ItemsPanel(private val activity: MainActivity, root: View, private val ui:
         if (d != null) setImageBitmap(thumb(d.filesRoot, item.cropFile))
       }
     )
-    val sb = SpannableStringBuilder(item.name)
+    val title = title(item)
+    val sb = SpannableStringBuilder(title)
     sb.setSpan(StyleSpan(Typeface.BOLD), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-    // v0.9: a result only because of extra names says which one matched.
-    if (hit.viaExtra && hit.extraMatches.isNotEmpty()) greyNote(sb, "  also: " + hit.extraMatches.joinToString(", "))
+    // v0.9: an extra name shown as the title is followed by the phone's own name.
+    if (title != item.name && item.name.isNotBlank()) greyNote(sb, "  " + item.name)
+    // v0.9: a result only because of extra names says which other extra text matched.
+    val also = hit.extraMatches.filter { !it.equals(title, ignoreCase = true) }
+    if (hit.viaExtra && also.isNotEmpty()) greyNote(sb, "  also: " + also.joinToString(", "))
     if (d != null) {
       sb.append('\n').append(lastSeenText(item, d, System.currentTimeMillis()))
       if (item.entry != null) greyNote(sb, "  from a scan")
@@ -468,6 +472,10 @@ class ItemsPanel(private val activity: MainActivity, root: View, private val ui:
     )
     return row
   }
+
+  /** v0.9: the row's and the sheet's title ([NameSearch.displayName]). */
+  private fun title(row: Row): String =
+    NameSearch.displayName(row.name, row.entry != null, row.entry?.nameEdited == true, row.search.extraNames, extraOn)
 
   /** [text] appended in the small grey style. */
   private fun greyNote(sb: SpannableStringBuilder, text: String) {
@@ -585,7 +593,7 @@ class ItemsPanel(private val activity: MainActivity, root: View, private val ui:
     box.addView(buttons)
     sheet =
       ui.dialog(activity, "item_sheet")
-        .setTitle(row.name)
+        .setTitle(title(row))
         .setView(ScrollView(activity).apply { addView(box) })
         .setPositiveButton("Find") { _, _ ->
           close("find")

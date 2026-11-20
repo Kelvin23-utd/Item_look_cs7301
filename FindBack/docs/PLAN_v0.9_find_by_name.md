@@ -55,6 +55,7 @@ The phone's own name and labels are never changed. Extra names come from a file,
 
 ## Items screen
 
+- A scan entry the user has not renamed shows its first bound extra name as the row and sheet title while extra names are on, followed by the phone's own name in small grey text; the stored name is unchanged.
 - Results in the order above. Several items with the same name stay separate rows, each with its own photo.
 - The second line of a row starts with "Last seen: " followed by the place and the time of the last sighting; the existing notes ("looked for in the last scan, not seen", "not checked since ...") follow it. The item sheet uses the same wording.
 - A "Last scan" chip limits the list to scan entries seen in the most recent finished scan, so one scan can be used as the inventory without deleting anything. It is one of the single-select chips (All, Last scan, one per room) and hides tapped records.

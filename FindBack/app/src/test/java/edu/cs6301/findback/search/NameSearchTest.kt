@@ -118,4 +118,13 @@ class NameSearchTest {
     assertEquals(1, NameSearch.matchClass(item, "tea", false))
     assertEquals(0, NameSearch.matchClass(item, "TEACUP", false))
   }
+
+  @Test
+  fun displayNamePrefersABoundExtraNameForAnUnrenamedEntry() {
+    assertEquals("Starbucks cup", NameSearch.displayName("cup", true, false, listOf("starbucks cup"), true))
+    assertEquals("cup", NameSearch.displayName("cup", true, false, listOf("starbucks cup"), false)) // switch off
+    assertEquals("My mug", NameSearch.displayName("My mug", true, true, listOf("starbucks cup"), true)) // renamed
+    assertEquals("cup", NameSearch.displayName("cup", false, false, listOf("starbucks cup"), true)) // tapped record
+    assertEquals("cup", NameSearch.displayName("cup", true, false, listOf(" "), true)) // nothing bound
+  }
 }

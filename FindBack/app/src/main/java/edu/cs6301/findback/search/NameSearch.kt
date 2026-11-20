@@ -62,6 +62,16 @@ object NameSearch {
     return sb.toString()
   }
 
+  /**
+   * The title an Items row shows. A scan entry the user has not renamed takes its first bound extra
+   * name (first letter in upper case) while extra names are on; the phone's label then follows in
+   * small grey text. Anything else keeps its own [name]. The stored name is never changed.
+   */
+  fun displayName(name: String, isEntry: Boolean, renamed: Boolean, extraNames: List<String>, extraOn: Boolean): String {
+    val extra = extraNames.firstOrNull { it.isNotBlank() }?.trim()
+    return if (extraOn && isEntry && !renamed && extra != null) extra.replaceFirstChar { it.uppercase(Locale.ROOT) } else name
+  }
+
   /** The words of [s] after [normalise]. */
   fun words(s: String): List<String> = normalise(s).let { if (it.isEmpty()) emptyList() else it.split(' ') }
 
