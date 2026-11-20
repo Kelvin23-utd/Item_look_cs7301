@@ -31,6 +31,8 @@ Physical ground truth, as stated by the person who ran it and not derived from t
 
 ## What the passes show (logs only; no image was looked at)
 
+A visual audit made afterwards (`2026-11-19_smoke_audit.md`) settles the two points marked unknown below: 9 of the 10 new entries are objects that pass 1 had not saved and 1 is a duplicate, and the new cup entry is not the moved cup (the moved cup was detected once in pass 2 and its tentative entry was dropped).
+
 - **Alignment between the two launches:** for the 15 entries the matcher linked in both passes, the pass-1 and pass-2 positions differ by a median of 0.12 m (maximum 0.29 m). The merge radius is 0.20 to 0.50 m, so this error alone can put an unmoved item out of reach.
 - **The current matcher against the ground truth.** One cup moved, yet pass 2 created 10 new entries (bowl 3, cup 1, book 1, laptop 1, suitcase 1, carrot 1, keyboard 1, cell phone 1). Six of them have a pass-1 entry of the same label 0.06 to 2.09 m away that was itself seen again in pass 2; three have a label that pass 1 never saved. Which of the 10 are duplicates of existing items and which are objects first detected in pass 2 is **unknown**: it needs a look at the views.
 - **The moved cup.** Two pass-1 cup entries are marked missed and one new cup entry appeared. The new entry's stored embedding has a cosine of 0.22 and 0.16 to the two missed cups (0.46 at most to any pass-1 cup, and 0.46 to a bottle). Over all logged observations, the best cosine between the new cup's 2 observations and the missed cups' pass-1 observations is 0.25 and 0.28. So no pass-1 cup resembles it by the phone's embedding. Whether the new entry is the moved cup is **unknown** until the views are looked at.
