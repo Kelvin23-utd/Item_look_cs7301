@@ -324,6 +324,33 @@ Which run counts: a model's *primary run* is its first complete run in time at a
 | `vlm_monitor.sh` | Read-only view of the workstation for a person: GPU owners, our processes, the queue's STATUS, newest log |
 | `test_vlm.py` | The aliases and former keys, primary and additional runs across sites (a second cluster's runs never primary, own cost rows, plot order, three-site wording), the second cluster's site tag, job script guard, folder creation, setup with constraints and the comparison of installed versions, set-aside and extra scrub words, a restarted job never run, the judge run that judged the primary pool, the cluster's pool equal to the Mac's, sanitising of cluster text, the queue's STATUS format, its model filter (only the listed contestants, in the queue's order, no judge and no pool, Model A skipped by its former-key run) and give-up time, the yield check and the choice of the latest finished run, singulars and normalisation, head words, the match and same-name rules, answer and verdict parsing, the pool's independence of method order and its blindness, request bodies, the metrics reader, every statistic against hand-worked values, energy integration, the report's counts on a hand-built run, Track B box matching, frame marking geometry, path sanitising |
 
+## Identity replay (identity_replay.py)
+
+The identity pilot's planned comparison (`paper/IDENTITY_PILOT_PROTOCOL.md`, Part B) runs offline on one v0.8 pull. It replays the same observations and history through four methods:
+
+- `current`: the app's logged decisions;
+- `generic`: alignment correction, match in place, exclusivity, moved only to items whose place was looked at and found empty, otherwise unresolved or add;
+- `household`: the same, reading a pack built from the history scans only;
+- `extra_view`: household plus the extra views logged after the test scan.
+
+Methods, parameters, scoring and limits: `notes/2026-11-19_identity_replay_design.md`. Standard library only; no image is read.
+
+```bash
+# label-free: decisions per sighting, beliefs, agreement between methods, alignment, cost
+python3 analysis/identity_replay.py <pull> --history H1,H2 --test T1,T2 --no-labels
+# scored: observation labels (obs,item), optional entry labels (entry,item), the filled sheet
+python3 analysis/identity_replay.py <pull> --history H1,H2 --test T1,T2 \
+    --labels <obs labels> --entry-labels <entry labels> --sheet <filled sheet> [--per-item]
+# freeze the parameters (with the commit) before any test scan is read; then run against the freeze
+python3 analysis/identity_replay.py --freeze <file>
+python3 analysis/identity_replay.py <pull> ... --frozen <file>
+python3 analysis/test_identity_replay.py        # tests (synthetic scenes; a few seconds)
+```
+
+- `--align off` or `--align both` runs generic and household without the correction too. Without `--labels` the script uses `<pull>/labels.private.csv` (and `entry_labels.private.csv`) when present.
+- Output goes to `analysis/out/identity_replay/<pull>/`: `result.json` (every decision, belief and score, the parameters, the commit) and `pack_<test scan>.json`. Both hold positions and item codes, so they stay out of git, as do the label files and the filled sheet.
+- `--per-item` prints item codes, so its output is private too.
+
 ## Session log
 
 | Session | Date | What | Use in study |
