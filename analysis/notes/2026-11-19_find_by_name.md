@@ -51,3 +51,17 @@ The existing pipeline ran once more, on the phone's current scan entries only (8
 Model C's file was pushed to the phone as `names.json`; all 76 of its items still matched the photos on the phone at that time. Whether the names are right has not been judged: the phone's 14 names (26 "bowl", 18 "cup", ...) become mostly distinct specific names, and a first read shows both plausible corrections and at least one name given to three different entries under different phone labels.
 
 Not yet checked on the device screen.
+
+## First look with names the owner had typed earlier (not the frozen comparison)
+
+On the first walk the owner typed a name for 9 tapped items when saving them. Used as search queries over that walk's 44 items (24 scan entries and 20 tapped items, the tapped items carrying only the phone's own label, not the typed name), with the same matching rule:
+
+| | Phone labels alone | Model A | Model B | Model C | Model D |
+| --- | --- | --- | --- | --- | --- |
+| Target found (of 9) | 0 | 3 | 3 | 4 | 3 |
+
+- Found with every model: two fans and a cup (the cup last of 8 results). Found by Model C only: one snack whose typed name the other models' names did not contain.
+- Not found: three typed words the models name differently, one query with a filler word in front of a word the models do use, one misspelt word on a photo most models did not call one item, and one placeholder name.
+- 16 of the 44 items have no phone label at all (tapped items the phone's classifier left unnamed).
+
+Limits: n = 9, one home; the names were typed when saving, not when searching; one is a placeholder; this set was looked at before any rule was frozen, so it is a development set. Ideas taken from it (ignoring filler words, tolerating a typo, saving a failed search word as a name for the item then picked) need a fresh test. The query sheet for the 24 scan entries has not been filled in and its comparison has not been run.
