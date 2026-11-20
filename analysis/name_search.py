@@ -10,8 +10,10 @@ naming experiment (analysis/notes/2026-11-17_vlm_naming_design.md).
     python3 -I analysis/name_search.py run <pull> --queries <queries.csv> --names <names.json> [--names ...]
 
 <pull> is a pulled phone folder (inventory.json, inventory/<id>.jpg, map.json). The saved scan of the
-naming experiment is backups/phone_files_2026-11-17_0008 (24 scan entries, map ce41deb2). Outputs go to
-analysis/out/name_search/<pull folder>/ (git-ignored) unless --out says otherwise.
+naming experiment is backups/phone_files_2026-11-17_0008 (24 scan entries, map ce41deb2). Another pull is
+named by a names run of its own (vlm_prepare.py --names-only): give its root with --vlm-out
+analysis/out/vlm_names/<pull folder>. Outputs go to analysis/out/name_search/<pull folder>/ (git-ignored)
+unless --out says otherwise.
 
 join    Can each saved model output be tied to the exact entry and the exact photo? Key: the entry id and
         the SHA-256 of the photo bytes. The package's crop-full image of the entry (documented as the

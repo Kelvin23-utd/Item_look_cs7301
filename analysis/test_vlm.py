@@ -1059,6 +1059,179 @@ def test_environment_fault_is_not_a_model_failure():
         shutil.rmtree(d)
 
 
+def _names_pull(root):
+    """A pull with three scan entries: a small photo, one above the 960-px cap and one without a photo."""
+    from PIL import Image
+    os.makedirs(os.path.join(root, "inventory"))
+    for eid, wh in (("e1", (120, 80)), ("e2", (500, 1100))):
+        Image.new("RGB", wh, (10, 20, 30)).save(os.path.join(root, "inventory", eid + ".jpg"), quality=90)
+    ents = [{"id": i, "name": "n" + i, "label": "cup", "sessionId": "cab39b87", "cropFile": "inventory/%s.jpg" % i}
+            for i in ("e2", "e1", "e3")]          # a session the experiment leaves out: kept in a names package
+    json.dump({"version": 1, "entries": ents}, open(os.path.join(root, "inventory.json"), "w"))
+    return root
+
+
+def test_names_package_is_the_photos_bytes():
+    if not HAVE_NP:
+        print("  (skipped: numpy/PIL missing)")
+        return
+    import hashlib
+    import vlm_prepare as vp
+    d = tempfile.mkdtemp(prefix="vlmtest_names_")
+    try:
+        pull, out = _names_pull(os.path.join(d, "pull")), os.path.join(d, "out")
+        man, local = vp.build_names(pull, out, log=lambda *a: None)
+        assert man["names_only"] is True and man["variants"] == ["crop-full"] and man["n_items"] == 2
+        assert [it["id"] for it in man["items"]] == ["inv:e1", "inv:e2"]
+        assert all(set(it["variants"]) == {"crop-full"} and it["set"] == "S" for it in man["items"])
+        for it in man["items"]:
+            eid = it["id"][4:]
+            sent = open(os.path.join(out, "package", "images", it["variants"]["crop-full"][0]), "rb").read()
+            assert sent == open(os.path.join(pull, "inventory", eid + ".jpg"), "rb").read()      # never resized
+            assert local[it["id"]]["sha256"] == hashlib.sha256(sent).hexdigest()
+        assert not local["inv:e1"]["images"]["full"]["over_cap"] and local["inv:e2"]["images"]["full"]["over_cap"]
+        assert local["inv:e2"]["images"]["full"]["resized"] is False
+        rec = json.load(open(os.path.join(out, "local", "items_local.json")))
+        assert rec["missing_photo"] == ["e3"] and rec["names_only"] is True
+        assert not os.path.exists(os.path.join(out, "package", "pool_inputs.json"))
+        # the experiment's folder is refused as the output of a names package; one pull only
+        for argv in (["--names-only", "--data", pull], ["--names-only", "--data", pull, "--data", pull, "--out", out]):
+            try:
+                vp.main(argv)
+                raise AssertionError("no SystemExit for %s" % argv)
+            except SystemExit as e:
+                assert e.code, argv
+    finally:
+        shutil.rmtree(d)
+
+
+def test_names_session_runs_the_primary_pass_only():
+    fbv = tempfile.mkdtemp(prefix="vlmtest_fbv_")
+    work = os.path.join(fbv, "names", "pull_x")
+    run = os.path.join(work, "runs", "2026-11-19_model_c")
+    for p in (os.path.join(work, "data", "images"), run):
+        os.makedirs(p)
+    items = []
+    for i in ("a", "b", "c", "d"):
+        open(os.path.join(work, "data", "images", "inv_%s__crop-full.jpg" % i), "wb").write(b"\xff\xd8x" + i.encode())
+        items.append({"id": "inv:" + i, "set": "S", "variants": {"crop-full": ["inv_%s__crop-full.jpg" % i]}})
+    json.dump({"version": 1, "names_only": True, "items": items}, open(os.path.join(work, "data", "items.json"), "w"))
+    try:
+        with _env(FBV=fbv, FB_WORK=work):
+            sys.modules.pop("vlm_remote", None)
+            import vlm_remote as vr_
+            assert vr_.DATA == os.path.join(work, "data") and vr_.RUNS_DIR == os.path.join(work, "runs")
+            assert vr_.FBV == fbv                    # weights, environment archive and caches stay in the folder
+            ans = json.dumps({"name": "mug", "category": "kitchenware", "attributes": [], "visible_text": "",
+                              "kind": "one item"})
+
+            def fake_timed(server, sampler, body, measure_metrics=True):
+                return {"t_send": 0.0, "t_first": 0.1, "t_last": 0.2, "text": ans, "status": 200, "error": None,
+                        "finish_reason": "stop", "usage": {}, "energy_j": 0.0, "vllm": {}}
+
+            def never(*a, **k):
+                raise AssertionError("a phase of the experiment ran in a names session")
+
+            orig = {k: getattr(vr_, k) for k in ("timed", "phase_crossview", "phase_concurrency", "phase_pings",
+                                                 "run_server_session", "IDLE_SECONDS")}
+            orig_post = vr_.vc.post_stream
+            vr_.timed, vr_.phase_crossview, vr_.phase_concurrency = fake_timed, never, never
+            vr_.phase_pings, vr_.IDLE_SECONDS = (lambda server, n=20: []), 0
+            vr_.vc.post_stream = lambda *a, **k: {}
+            server = types.SimpleNamespace(key="model_c", port=1)
+            vr_.run_server_session = lambda args, body: body(server, None, lambda *a, **k: None, 0)
+            try:
+                vr_.cmd_session(argparse.Namespace(run=run, only_roundtrip=False, no_hold=True))
+            finally:
+                vr_.vc.post_stream = orig_post
+                for k, v in orig.items():
+                    setattr(vr_, k, v)
+            rows = [json.loads(l) for l in open(os.path.join(run, "requests.jsonl"))]
+            assert sorted(r["item"] for r in rows) == ["inv:a", "inv:b", "inv:c", "inv:d"]
+            assert {(r["phase"], r["variant"], r["repeat"]) for r in rows} == {("seq", "crop-full", 1)}
+            assert all(r["name"] == "mug" for r in rows)
+    finally:
+        sys.modules.pop("vlm_remote", None)
+        shutil.rmtree(fbv)
+
+
+def test_workstation_names_folder_and_output_root():
+    import importlib
+    import vlm_ws as vw
+    try:
+        with _env(FB_WS_DIR="/data/$USER/fb_vlm", FB_WS_SUB=None, FB_VLM_OUT=None):
+            vw = importlib.reload(vw)
+            assert vw.remote_prefix().endswith('W="$D"; ')
+            assert vw.MIRROR.endswith(os.path.join("out", "vlm", "ws_runs"))
+        out = tempfile.mkdtemp(prefix="vlmtest_names_out_")
+        with _env(FB_WS_DIR="/data/$USER/fb_vlm", FB_WS_SUB="names/phone_files_x_v0.9", FB_VLM_OUT=out):
+            vw = importlib.reload(vw)
+            assert vw.remote_prefix().endswith('W="$D/names/phone_files_x_v0.9"; ')
+            assert vw.PKG == os.path.join(out, "package") and vw.MIRROR == os.path.join(out, "ws_runs")
+            assert not vw.names_only()                                  # no package yet
+            os.makedirs(vw.PKG)
+            json.dump({"names_only": True, "items": []}, open(os.path.join(vw.PKG, "items.json"), "w"))
+            assert vw.names_only()
+            try:
+                vw.cmd_queue_start(argparse.Namespace(shared=False, models=None, until=None))
+                raise AssertionError("no SystemExit")
+            except SystemExit as e:
+                assert "unset FB_WS_SUB" in str(e)
+        for bad in ("../x", "/abs", "a/../b", "a b", 'a"b', "a/", "$HOME"):
+            with _env(FB_WS_DIR="/data/$USER/fb_vlm", FB_WS_SUB=bad):
+                try:
+                    vw.remote_prefix()
+                    raise AssertionError("no SystemExit for %r" % bad)
+                except SystemExit:
+                    pass
+        shutil.rmtree(out)
+    finally:
+        importlib.reload(vw)
+
+
+def test_cluster_names_folder_and_output_root():
+    import importlib
+    import vlm_cluster as vcl
+    try:
+        with _env(FB_CLUSTER_DIR="/work/$USER/fb_vlm", FB_CLUSTER_SUB=None, FB_VLM_OUT=None, FB_CLUSTER_SITE=None):
+            vcl = importlib.reload(vcl)
+            assert 'D="/work/$USER/fb_vlm"; W="$D"; ' in vcl.remote_prefix()
+            assert vcl.mirror().endswith(os.path.join("out", "vlm", "cluster_runs"))
+            js = vcl.job_script("/w/u/fb_vlm", "2026-11-18_model_a", "python vlm_remote.py job model_a")
+            assert 'W="/w/u/fb_vlm"\n' in js and 'cd "$W/code" || exit 9\n' in js   # no subfolder: the folder itself
+        out = tempfile.mkdtemp(prefix="vlmtest_names_out_")
+        with _env(FB_CLUSTER_DIR="/work/$USER/fb_vlm", FB_CLUSTER_SUB="names/phone_files_x", FB_VLM_OUT=out,
+                  FB_CLUSTER_SITE=None):
+            vcl = importlib.reload(vcl)
+            assert 'W="$D/names/phone_files_x"; ' in vcl.remote_prefix()
+            assert vcl.PKG == os.path.join(out, "package") and vcl.mirror() == os.path.join(out, "cluster_runs")
+            js = vcl.job_script("/w/u/fb_vlm", "2026-11-19_model_c", "python vlm_remote.py job model_c",
+                                "/w/u/fb_vlm/names/phone_files_x")
+            # the environment and weights are the folder's; data, code and runs the subfolder's
+            assert '. "$D/env/env.sh" || exit 9\nexport FB_SITE=cluster\nexport FB_WORK="$W"\ncd "$W/code"' in js
+            assert 'cd "$W/runs"' in vcl.set_aside_cmd("2026-11-19_model_c", "preempted", "142233")
+            assert not vcl.names_only()
+            os.makedirs(vcl.PKG)
+            json.dump({"names_only": True, "items": []}, open(os.path.join(vcl.PKG, "items.json"), "w"))
+            assert vcl.names_only()
+            try:                                     # judges are refused before anything is sent
+                vcl.cmd_submit(argparse.Namespace(models=["model_c"], judges=None, no_judges=False, after=None,
+                                                  one_gpu=False))
+                raise AssertionError("no SystemExit")
+            except SystemExit as e:
+                assert "add --no-judges" in str(e)
+        for bad in ("../x", "/abs", "a/../b", "a b", "a;b"):
+            with _env(FB_CLUSTER_DIR="/work/$USER/fb_vlm", FB_CLUSTER_SUB=bad):
+                try:
+                    vcl.remote_prefix()
+                    raise AssertionError("no SystemExit for %r" % bad)
+                except SystemExit:
+                    pass
+        shutil.rmtree(out)
+    finally:
+        importlib.reload(vcl)
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in sorted((n, f) for n, f in globals().items() if n.startswith("test_") and callable(f)):

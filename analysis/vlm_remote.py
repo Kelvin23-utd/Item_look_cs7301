@@ -24,7 +24,12 @@ waits (at most --hold-max seconds) for the Mac's round-trip test and stops the s
 block. A hard limit (--max-seconds) stops everything even if the Mac never answers. Nothing keeps
 running after a session ends.
 
-Paths: the package is in $FBV/data, results go to --run (inside $FBV/runs).
+Paths: the package is in $FBV/data, results go to --run (inside $FBV/runs). With FB_WORK set (a
+subfolder of $FBV, written by vlm_cluster.py when FB_CLUSTER_SUB is set), data/ and runs/ are those of
+$FB_WORK; weights, environment and caches stay in $FBV.
+
+A package whose items.json has "names_only": true (vlm_prepare.py --names-only) gets a session of the
+sequential pass with crop-full, repeat 1 only (no other input, repeat, cross-view or concurrency phase).
 """
 import argparse
 import base64
@@ -47,7 +52,8 @@ sys.path.insert(0, HERE)
 import vlm_common as vc  # noqa: E402
 
 FBV = os.environ.get("FBV") or os.path.dirname(HERE)
-DATA = os.path.join(FBV, "data")
+WORK = os.environ.get("FB_WORK") or FBV            # data/ and runs/ (see the docstring)
+DATA = os.path.join(WORK, "data")
 
 def model(key):
     """Serving facts of a model (alias or former key): repo, rev, ignore and limit from the private model
@@ -532,12 +538,12 @@ def row_from(r, **kw):
 
 # ----------------------------------------------------------------------------- phases
 
-def phase_sequential(server, sampler, items, out_path, status):
+def phase_sequential(server, sampler, items, out_path, status, repeats=REPEATS, variants=None):
     order = list(items)
     random.Random(vc.SEED).shuffle(order)
     with open(out_path, "a") as f:
-        for rep in range(1, REPEATS + 1):
-            for variant in vc.VARIANTS:
+        for rep in range(1, repeats + 1):
+            for variant in variants or vc.VARIANTS:
                 todo = [it for it in order if variant in it["variants"]]
                 for k, it in enumerate(todo):
                     body, meta = name_request(server.key, it, variant)
@@ -784,7 +790,10 @@ def cmd_session(args):
         t0 = time.perf_counter()
         time.sleep(IDLE_SECONDS)
         status("idle window", idle_window=[t0, time.perf_counter()])
-        if not args.only_roundtrip:
+        if man.get("names_only") and not args.only_roundtrip:
+            status("names package: sequential pass, %s, repeat 1 only" % vc.PRIMARY_VARIANT)
+            phase_sequential(server, sampler, rs, out, status, repeats=1, variants=[vc.PRIMARY_VARIANT])
+        elif not args.only_roundtrip:
             phase_sequential(server, sampler, rs, out, status)
             phase_crossview(server, sampler, vs, out)
             status("cross-view done")
@@ -868,7 +877,7 @@ def cmd_smoke(args):
 
 # ----------------------------------------------------------------------------- queue (detached)
 
-RUNS_DIR = os.path.join(FBV, "runs")
+RUNS_DIR = os.path.join(WORK, "runs")
 CONTESTANTS = ["model_a", "model_b", "model_d", "model_c"]     # the queue's order (design note)
 JUDGES = list(vc.JUDGES)
 DISK_BUDGET_GB = 80

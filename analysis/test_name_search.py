@@ -281,6 +281,44 @@ def test_export_writes_the_plans_schema():
         shutil.rmtree(root)
 
 
+def test_join_and_export_on_a_names_package():
+    """A names package (vlm_prepare.py --names-only) in its own --vlm-out root: scan entries only, crop-full =
+    the photo's bytes, no records, one run of the sequential pass. The earlier experiment's folder is not read."""
+    root = tempfile.mkdtemp(prefix="ns_names_")
+    try:
+        P = {k: photo(k * 50) for k in ("n1", "n2", "n3")}            # n2 stands for a photo above the 960-px cap
+        pull = write_pull(os.path.join(root, "pull"), [
+            {"id": "n1", "name": "cup", "labels": ["cup"], "last": 3, "photo": P["n1"]},
+            {"id": "n2", "name": "bottle", "labels": ["bottle"], "last": 2, "photo": P["n2"]},
+            {"id": "n3", "name": "book", "labels": ["book"], "last": 1, "photo": P["n3"]}])
+        rows = [req("inv:n1", answer("coffee mug", attributes=["white"]), nbytes=len(P["n1"])),
+                req("inv:n2", answer("water bottle"), nbytes=len(P["n2"])),
+                req("inv:n3", answer("Book"), nbytes=len(P["n3"]))]
+        vlm = write_vlm(os.path.join(root, "vlm_names", "pull"), [("inv:" + k, "S", P[k]) for k in ("n1", "n2", "n3")],
+                        {"cluster_runs/2026-11-19_model_c": (10.0, rows)})
+        man = json.load(open(os.path.join(vlm, "package", "items.json")))
+        json.dump(dict(man, names_only=True), open(os.path.join(vlm, "package", "items.json"), "w"))
+        write(os.path.join(vlm, "local", "items_local.json"), json.dumps({"names_only": True, "items": {
+            "inv:" + k: {"images": {"full": {"resized": False, "over_cap": k == "n2"}}} for k in P}}))
+        code, text = run_main(["join", pull, "--vlm-out", vlm, "--model", "model_c", "--out",
+                               os.path.join(root, "join.json")])
+        assert code == 0 and "| model_c | cluster/2026-11-19_model_c | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |" in text, text
+        assert "3/3 package crop-full images have the SHA-256 of <pull>/<cropFile> (0 marked resized" in text, text
+        out = os.path.join(root, "names_model_c.json")
+        code, text = run_main(["export", pull, "--model", "model_c", "--vlm-out", vlm, "--out", out,
+                               "--created-ms", "1795100000000"])
+        assert code == 0, text
+        doc = json.load(open(out))
+        assert ns.validate_names(doc) == [] and doc["source"] == "model_c:2026-11-19"
+        by = {i["id"]: i for i in doc["items"]}
+        assert sorted(by) == ["n1", "n2"]                     # n3: the name equals the phone's, no attribute
+        assert all(by[k]["cropSha256"] == sha(P[k]) for k in by)
+        assert by["n1"]["names"] == ["coffee mug"] and by["n1"]["descriptors"] == ["white"]
+        assert by["n2"]["names"] == ["water bottle"]
+    finally:
+        shutil.rmtree(root)
+
+
 def test_names_validation_and_binding():
     good = {"version": 1, "source": "model_a:2026-11-18", "createdMs": 1, "items": [
         {"kind": "entry", "id": "e1", "cropSha256": "0" * 64, "names": ["x"], "descriptors": []}]}

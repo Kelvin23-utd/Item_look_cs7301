@@ -36,3 +36,18 @@ The saved outputs of the four naming models belong to the first scan walk (24 sc
 3. `run` scores the same queries on the same 24 entries with phone labels alone and with each model's names file: results shown, the target's rank and match class; results that appear only through extra names and are not the target are listed for the owner to judge.
 
 No ranking on owner queries has been looked at by anyone before the freeze.
+
+## Naming pass over the phone's current inventory (later the same evening)
+
+The existing pipeline ran once more, on the phone's current scan entries only (82 photos, each sent as its original bytes, primary prompt and decoding unchanged, one pass). All four models ran on the university cluster (one GPU each, about 3 minutes per job including server start); the outputs live in a separate output root and the earlier experiment's files are unchanged.
+
+| Model | With output | Photo hash equal | Model says "one item" (usable) | Name differs from the phone's |
+| --- | --- | --- | --- | --- |
+| Model A | 82 | 82 | 79 | 73 |
+| Model B | 82 | 82 | 75 | 70 |
+| Model C | 82 | 82 | 76 | 74 |
+| Model D | 82 | 82 | 76 | 72 |
+
+Model C's file was pushed to the phone as `names.json`; all 76 of its items still matched the photos on the phone at that time. Whether the names are right has not been judged: the phone's 14 names (26 "bowl", 18 "cup", ...) become mostly distinct specific names, and a first read shows both plausible corrections and at least one name given to three different entries under different phone labels.
+
+Not yet checked on the device screen.

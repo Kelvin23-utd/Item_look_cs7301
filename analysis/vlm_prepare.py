@@ -14,6 +14,15 @@ Writes, under --out (default analysis/out/vlm, git-ignored):
                             chosen keyframe and boxes (for the Track B baselines)
 
 Item sets and inputs are defined in analysis/notes/2026-11-17_vlm_naming_design.md.
+
+    python3 analysis/vlm_prepare.py --names-only --data <pull> --out analysis/out/vlm_names/<pull folder>
+
+A names package (for the phone's names.json, FindBack/docs/PLAN_v0.9_find_by_name.md): every scan entry of
+<pull>/inventory.json (no session left out) with one input, crop-full = the original bytes of
+<pull>/<cropFile>, never resized, so that a name binds to the photo by its SHA-256 even when the longer side
+is above the design's 960-px cap (such photos are counted and marked over_cap). No records, keyframes or
+cross-view crops. items.json carries "names_only": true, which makes a session run only the sequential pass
+with crop-full, repeat 1 (vlm_remote.py) and keeps the judges' inputs out (vlm_cluster.py).
 """
 import argparse
 import io
@@ -245,13 +254,68 @@ def build(bd, out_dir, log=print):
     return manifest, local
 
 
+def build_names(pull, out_dir, log=print):
+    """The names package of one pull (see the docstring): scan entries only, crop-full = original bytes."""
+    import hashlib
+    from PIL import Image
+    pkg = os.path.join(out_dir, "package")
+    img_dir = os.path.join(pkg, "images")
+    os.makedirs(img_dir, exist_ok=True)
+    os.makedirs(os.path.join(out_dir, "local"), exist_ok=True)
+    for f in os.listdir(img_dir):
+        if f.endswith(".jpg"):
+            os.remove(os.path.join(img_dir, f))
+    with open(os.path.join(pull, "inventory.json")) as f:
+        entries = sorted(json.load(f).get("entries") or [], key=lambda e: e["id"])
+    items, local, missing = [], {}, []
+    for e in entries:
+        path = os.path.join(pull, e.get("cropFile") or "inventory/%s.jpg" % e["id"])
+        if not os.path.isfile(path):
+            missing.append(e["id"])
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        with Image.open(io.BytesIO(data)) as im:
+            w, h = im.size
+        iid = "inv:" + e["id"]
+        fname = "%s__crop-full.jpg" % safe(iid)
+        with open(os.path.join(img_dir, fname), "wb") as f:
+            f.write(data)
+        items.append({"id": iid, "set": "S", "variants": {vc.PRIMARY_VARIANT: [fname]}})
+        local[iid] = {"set": "S", "entry": e["id"], "session": e.get("sessionId"), "phone_label": e.get("label"),
+                      "stored_name": e.get("name"), "sha256": hashlib.sha256(data).hexdigest(),
+                      "images": {"full": {"w": w, "h": h, "bytes": len(data), "resized": False,
+                                          "over_cap": max(w, h) > vc.SIZE_CAP["full"]}},
+                      "crop_source": os.path.relpath(path, os.path.join(HERE, ".."))}
+    manifest = {"version": 1, "names_only": True, "n_items": len(items), "variants": [vc.PRIMARY_VARIANT],
+                "items": items}
+    with open(os.path.join(pkg, "items.json"), "w") as f:
+        json.dump(manifest, f, indent=1)
+    with open(os.path.join(out_dir, "local", "items_local.json"), "w") as f:
+        json.dump({"data": [os.path.relpath(pull, os.path.join(HERE, ".."))], "excluded": [], "names_only": True,
+                   "missing_photo": missing, "items": local}, f, indent=1)
+    over = sum(1 for v in local.values() if v["images"]["full"]["over_cap"])
+    log("names package: %d of %d scan entries (%d without a photo), crop-full only, original bytes (%d above "
+        "the %d-px cap); %.1f MB" % (len(items), len(entries), len(missing), over, vc.SIZE_CAP["full"],
+                                     sum(v["images"]["full"]["bytes"] for v in local.values()) / 1e6))
+    return manifest, local
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", action="append", required=True, help="pulled data folder (repeatable)")
     ap.add_argument("--exclude-session", action="append", default=[])
     ap.add_argument("--no-default-exclude", action="store_true")
     ap.add_argument("--out", default=os.path.join(HERE, "out", "vlm"))
+    ap.add_argument("--names-only", action="store_true", help="names package of one pull (see the docstring)")
     args = ap.parse_args(argv)
+    if args.names_only:
+        if len(args.data) != 1 or args.exclude_session:
+            sys.exit("--names-only takes one --data folder and no --exclude-session")
+        if os.path.abspath(args.out) == os.path.abspath(os.path.join(HERE, "out", "vlm")):
+            sys.exit("--names-only: give a new --out (analysis/out/vlm holds the naming experiment)")
+        build_names(args.data[0], args.out)
+        return
     excluded = set(args.exclude_session) | (set() if args.no_default_exclude else set(bc.DEFAULT_EXCLUDED_SESSIONS))
     bd = bc.BenchData(args.data, excluded)
     build(bd, args.out)

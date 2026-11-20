@@ -24,6 +24,14 @@
     python3 analysis/vlm_ws.py procs             # processes of this experiment still running
     python3 analysis/vlm_ws.py cleanup --yes     # delete the whole folder on the workstation
 
+A names run of another pull (vlm_prepare.py --names-only), kept apart from the experiment on both sides:
+
+    export FB_VLM_OUT=analysis/out/vlm_names/<pull folder>   # local root: package/, ws_runs/ (default analysis/out/vlm)
+    export FB_WS_SUB=names/<pull folder>          # data/, code/ and runs/ in this subfolder of the folder;
+                                                 #   weights, environment and caches stay shared
+    python3 analysis/vlm_ws.py run model_c        # a names package: no judges' inputs, no round trip (--no-hold)
+    python3 analysis/vlm_ws.py pull
+
 Standard library only. The SSH alias and the folder are read from the environment and never written
 to a file; text pulled back has the workstation's paths and account replaced by placeholders. One SSH
 connection is shared (ControlMaster) because opening one can take up to a minute.
@@ -51,7 +59,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import vlm_common as vc  # noqa: E402
 
-OUT = os.path.join(HERE, "out", "vlm")
+OUT = os.path.abspath(os.environ.get("FB_VLM_OUT") or os.path.join(HERE, "out", "vlm"))   # see the docstring
 PKG = os.path.join(OUT, "package")
 MIRROR = os.path.join(OUT, "ws_runs")
 DISK_BUDGET_GB = 80
@@ -93,12 +101,34 @@ def ssh_opts():
             "-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ControlPath=" + sock]
 
 
+SUB_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
+
+
+def sub():
+    """FB_WS_SUB (a relative subfolder of the folder for data/, code/ and runs/), or "" for the folder itself."""
+    s = os.environ.get("FB_WS_SUB", "")
+    if s and not SUB_RE.match(s):
+        sys.exit("FB_WS_SUB must be a relative path of letters, digits, '.', '_' and '-' (no '..')")
+    return s
+
+
 def remote_prefix():
-    # FB_WS_DIR goes in double quotes so that $USER expands on the workstation, not here.
+    # FB_WS_DIR goes in double quotes so that $USER expands on the workstation, not here. $W: data/, code/ and
+    # runs/ of this package (the folder itself, or FB_WS_SUB inside it).
     d = env("FB_WS_DIR")
     if '"' in d or "`" in d:
         sys.exit("FB_WS_DIR must not contain quotes")
-    return 'D="%s"; [ -f "$D/.fb_vlm_marker" ] || { echo "folder missing; run setup" >&2; exit 9; }; ' % d
+    return ('D="%s"; [ -f "$D/.fb_vlm_marker" ] || { echo "folder missing; run setup" >&2; exit 9; }; W="$D%s"; '
+            % (d, "/" + sub() if sub() else ""))
+
+
+def names_only():
+    """True for a names package (vlm_prepare.py --names-only)."""
+    try:
+        with open(os.path.join(PKG, "items.json")) as f:
+            return bool(json.load(f).get("names_only"))
+    except (OSError, ValueError):
+        return False
 
 
 def ssh(cmd, env_sh=True, check=True, capture=False, timeout=None, quiet=False, prefix=True):
@@ -126,6 +156,11 @@ def rsync(src, dst, delete=False, extra=()):
 def remote_dir():
     """The folder's absolute path, read from the workstation (kept in memory only)."""
     return ssh_out('echo "$D"', env_sh=False).strip()
+
+
+def remote_work():
+    """Absolute path of $W (see remote_prefix)."""
+    return ssh_out('echo "$W"', env_sh=False).strip()
 
 
 # ----------------------------------------------------------------------------- setup, sync, weights
@@ -157,19 +192,30 @@ def cmd_setup(args):
 def cmd_sync(args):
     if not os.path.exists(os.path.join(PKG, "items.json")):
         sys.exit("no package; run vlm_prepare.py first")
-    r = subprocess.run([sys.executable, os.path.join(HERE, "vlm_report.py"), "pool-inputs"], capture_output=True,
-                       text=True)
-    if r.returncode != 0:
-        sys.exit("pool inputs: " + r.stderr[-500:])
-    d = remote_dir()
+    if not names_only():                    # a names package has no judges, so no judging pool inputs
+        r = subprocess.run([sys.executable, os.path.join(HERE, "vlm_report.py"), "pool-inputs"], capture_output=True,
+                           text=True)
+        if r.returncode != 0:
+            sys.exit("pool inputs: " + r.stderr[-500:])
+    # the images go only into the private folder: refuse unless it is mode 700 and owned by this account
+    mode = ssh_out('stat -c "%a %U" "$D"; id -un', env_sh=False).split()
+    if len(mode) != 3 or mode[0] != "700" or mode[1] != mode[2]:
+        sys.exit("the folder on the workstation is not private (mode 700, ours); nothing copied")
+    if sub():
+        # the subfolder is private from the first moment, inside the private folder
+        ssh('umask 077; mkdir -p -m 700 "$W" && cd "$W" && mkdir -p data code runs && chmod 700 "$W" data code runs',
+            env_sh=False)
+    w = remote_work()
     host = env("FB_WORKSTATION")
     # the judge pool may have been built on the workstation: never delete it from here
-    rsync(PKG + "/", "%s:%s/data/" % (host, d), delete=True, extra=["--exclude", "judge_pool.json"])
+    rsync(PKG + "/", "%s:%s/data/" % (host, w), delete=True, extra=["--exclude", "judge_pool.json"])
     for f in ("vlm_remote.py", "vlm_common.py"):
-        rsync(os.path.join(HERE, f), "%s:%s/code/" % (host, d))
+        rsync(os.path.join(HERE, f), "%s:%s/code/" % (host, w))
     vc.private_models()                     # the remote code reads the models' identifiers from this file
-    rsync(vc.models_path(), "%s:%s/code/%s" % (host, d, vc.MODELS_FILE))
-    print(ssh_out('echo "data: $(find "$D/data" -type f | wc -l) files, $(du -sh "$D/data" | cut -f1)"', env_sh=False))
+    rsync(vc.models_path(), "%s:%s/code/%s" % (host, w, vc.MODELS_FILE))
+    print(ssh_out('chmod -R go-rwx "$W/data" "$W/code"; echo "data: $(find "$W/data" -type f | wc -l) files, '
+                  '$(du -sh "$W/data" | cut -f1); modes: folder $(stat -c %a "$D"), work $(stat -c %a "$W"), '
+                  'model file $(stat -c %a "$W/code/' + vc.MODELS_FILE + '")"', env_sh=False))
 
 
 def folder_gb():
@@ -221,6 +267,8 @@ def queue_flags(args):
 
 
 def cmd_queue_start(args):
+    if sub() or names_only():
+        sys.exit("the queue runs the experiment in the folder itself: unset FB_WS_SUB and FB_VLM_OUT")
     flags = queue_flags(args)
     cmd_sync(args)
     out = ssh_out('cd "$D/code"; if flock -n "$D/runs/queue.lock" true; then '
@@ -281,7 +329,9 @@ def check_free_or_exit(model, args):
 
 
 def start_remote(kind, model, run, flags=""):
-    ssh('X="$D/runs/%s"; [ -d "$X" ] && mv "$X" "${X}_attempt_$(date +%%H%%M%%S)"; mkdir -p "$X" && cd "$D/code" && '
+    # FB_WORK: the session reads data/ and writes runs/ of $W (vlm_remote.py)
+    ssh('X="$W/runs/%s"; [ -d "$X" ] && mv "$X" "${X}_attempt_$(date +%%H%%M%%S)"; mkdir -p "$X" && cd "$W/code" && '
+        'export FB_WORK="$W" && '
         # The braces matter: with a bare "a && b &" the shell keeps a waiting copy of itself that holds this
         # SSH call open until the session ends, so the caller never reaches the round trip.
         '{ nohup setsid python vlm_remote.py %s %s --run "$X" %s > "$X/session.out" 2>&1 < /dev/null & }'
@@ -289,7 +339,7 @@ def start_remote(kind, model, run, flags=""):
 
 
 def remote_status(run):
-    r = ssh('cat "$D/runs/%s/status.json" 2>/dev/null' % run, capture=True, check=False, env_sh=False)
+    r = ssh('cat "$W/runs/%s/status.json" 2>/dev/null' % run, capture=True, check=False, env_sh=False)
     try:
         return json.loads(r.stdout)
     except ValueError:
@@ -373,6 +423,8 @@ def roundtrip(model, remote_port, out_dir):
 def mac_session(model, kind, suffix, flags):
     """One session started from the Mac; when it holds, run the round trip, then release and pull."""
     cmd_sync(None)
+    if names_only() and kind == "session" and "--no-hold" not in flags:
+        flags = (flags + " --no-hold").strip()           # a names run needs no round trip from the Mac
     run = "%s_%s%s" % (time.strftime("%Y-%m-%d"), model, suffix)
     start_remote(kind, model, run, flags)
     st = wait_state(run, ("hold",) + TERMINAL, timeout=4 * 3600)
@@ -380,11 +432,11 @@ def mac_session(model, kind, suffix, flags):
         try:
             roundtrip(model, st["port"], os.path.join(MIRROR, run))
         finally:
-            ssh('touch "$D/runs/%s/release"' % run, env_sh=False)
+            ssh('touch "$W/runs/%s/release"' % run, env_sh=False)
         st = wait_state(run, TERMINAL, timeout=900, every=10)
     state = st.get("state") or "unknown"
     if state != "done":
-        ssh('mv "$D/runs/%s" "$D/runs/%s_%s"' % (run, run, "contaminated" if state in ("yielded", "busy") else state),
+        ssh('mv "$W/runs/%s" "$W/runs/%s_%s"' % (run, run, "contaminated" if state in ("yielded", "busy") else state),
             env_sh=False, check=False)
         local = os.path.join(MIRROR, run)
         if os.path.isdir(local):
@@ -437,11 +489,11 @@ def sanitize_tree(root, replacements):
 
 def pull():
     """Mirror the workstation's runs/ into analysis/out/vlm/ws_runs (never deletes local files)."""
-    d = remote_dir()
+    d, w = remote_dir(), remote_work()
     info = ssh_out('echo "$HOME"; id -un; hostname -s; hostname', env_sh=False).split()
     host = env("FB_WORKSTATION")
     os.makedirs(MIRROR, exist_ok=True)
-    rsync("%s:%s/runs/" % (host, d), MIRROR + "/", extra=["--exclude", "queue.lock", "--exclude", "release"])
+    rsync("%s:%s/runs/" % (host, w), MIRROR + "/", extra=["--exclude", "queue.lock", "--exclude", "release"])
     repl = [(d, "<WS_DIR>"), (info[0] if info else "", "<WS_HOME>")] + [(x, "<WS>") for x in info[1:]]
     repl.append((host, "<WS>"))
     sanitize_tree(MIRROR, sorted(repl, key=lambda x: -len(x[0])))
